@@ -84,14 +84,58 @@
     return row;
   }
 
-  // Onglet affiché pour un hash d'URL : « planning » par défaut (hash vide ou inconnu).
+  // Onglet affiché pour un hash d'URL (« #clients/<id> » reste dans « clients ») :
+  // « planning » par défaut (hash vide ou inconnu).
   function routeOf(hash, routes) {
-    const name = String(hash || '').replace(/^#/, '');
+    const name = String(hash || '').replace(/^#/, '').split('/')[0];
     return routes.includes(name) ? name : 'planning';
   }
+
+  // Sous-page d'un onglet : « #clients/<id> » -> « <id> » (chaîne vide sinon).
+  const routeParam = (hash) => decodeURIComponent(String(hash || '').replace(/^#/, '').split('/')[1] || '');
+
+  // Lien saisi par l'utilisateur : http(s) uniquement, https:// ajouté si le schéma manque.
+  // Chaîne vide si rien n'est saisi ; lève une erreur si le lien est inutilisable.
+  function normalizeUrl(raw) {
+    const text = String(raw ?? '').trim();
+    if (!text) return '';
+    const candidate = /^[a-z][a-z0-9+.-]*:/i.test(text) ? text : `https://${text}`;
+    let url;
+    try { url = new URL(candidate); } catch { throw new Error(`Lien invalide : « ${text} ».`); }
+    const hostOk = url.hostname.includes('.') || url.hostname === 'localhost';
+    if (!['http:', 'https:'].includes(url.protocol) || !hostOk) throw new Error(`Lien invalide : « ${text} ».`);
+    return candidate;
+  }
+
+  // Année d'un projet (prestation vendue) : entier plausible.
+  function parseYear(raw) {
+    const text = String(raw ?? '').trim();
+    const year = Number(text);
+    if (!/^\d{4}$/.test(text) || year < 2000 || year > 2100) throw new Error('Année invalide (ex. 2026).');
+    return year;
+  }
+
+  // Message d'erreur pour un nom de client (vide, ou déjà pris par un autre) ; '' si valide.
+  function clientNameError(clients, id, name) {
+    if (!String(name ?? '').trim()) return 'Le nom du client est obligatoire.';
+    return clients.some((c) => c.id !== id && same(c.name, name)) ? 'Ce client existe déjà.' : '';
+  }
+
+  // Raison pour laquelle un client ne peut pas être supprimé ; '' s'il le peut.
+  function deleteClientBlocker(client, projects, protectedName) {
+    if (same(client.name, protectedName)) return 'Ce client par défaut est protégé.';
+    const n = projects.filter((p) => p.client_id === client.id).length;
+    return n ? `Ce client a encore ${n} projet${n > 1 ? 's' : ''} rattaché${n > 1 ? 's' : ''}.` : '';
+  }
+
+  // Projets d'un client : année décroissante, puis nom.
+  const clientProjects = (projects, clientId) => projects
+    .filter((p) => p.client_id === clientId)
+    .sort((a, b) => (b.year || 0) - (a.year || 0) || a.name.localeCompare(b.name));
 
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
-  return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, buildLabel };
+  return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+    normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects };
 }));

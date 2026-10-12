@@ -215,3 +215,98 @@ describe('buildLabel', () => {
     assert.equal(L.buildLabel('1.7.0', undefined), 'v1.7.0');
   });
 });
+
+describe('routeOf / routeParam (sous-pages)', () => {
+  const routes = ['planning', 'clients', 'archives'];
+
+  test('un hash #clients/<id> reste dans l’onglet clients', () => {
+    assert.equal(L.routeOf('#clients/abc-123', routes), 'clients');
+    assert.equal(L.routeParam('#clients/abc-123'), 'abc-123');
+  });
+
+  test('sans sous-page, pas de paramètre', () => {
+    assert.equal(L.routeParam('#clients'), '');
+    assert.equal(L.routeParam(''), '');
+  });
+});
+
+describe('normalizeUrl', () => {
+  test('ajoute https:// quand le schéma manque', () => {
+    assert.equal(L.normalizeUrl('acme.fr'), 'https://acme.fr');
+    assert.equal(L.normalizeUrl('  www.acme.fr/devis  '), 'https://www.acme.fr/devis');
+  });
+
+  test('conserve un lien http(s) complet', () => {
+    assert.equal(L.normalizeUrl('http://acme.fr'), 'http://acme.fr');
+    assert.equal(L.normalizeUrl('https://drive.google.com/file/d/1'), 'https://drive.google.com/file/d/1');
+  });
+
+  test('une valeur vide donne une chaîne vide', () => {
+    assert.equal(L.normalizeUrl('   '), '');
+    assert.equal(L.normalizeUrl(null), '');
+  });
+
+  test('refuse les schémas dangereux ou les hôtes invalides', () => {
+    assert.throws(() => L.normalizeUrl('javascript:alert(1)'), /Lien invalide/);
+    assert.throws(() => L.normalizeUrl('ftp://acme.fr'), /Lien invalide/);
+    assert.throws(() => L.normalizeUrl('acme'), /Lien invalide/);
+    assert.throws(() => L.normalizeUrl('https://exa mple.fr'), /Lien invalide/);
+  });
+});
+
+describe('parseYear', () => {
+  test('accepte une année plausible', () => {
+    assert.equal(L.parseYear('2026'), 2026);
+    assert.equal(L.parseYear(2025), 2025);
+  });
+
+  test('refuse le reste', () => {
+    assert.throws(() => L.parseYear(''), /année/i);
+    assert.throws(() => L.parseYear('abc'), /année/i);
+    assert.throws(() => L.parseYear('1899'), /année/i);
+    assert.throws(() => L.parseYear('2026.5'), /année/i);
+  });
+});
+
+describe('clientNameError', () => {
+  const clients = [{ id: 'c1', name: 'Acme' }, { id: 'c2', name: 'Globex' }];
+
+  test('nom vide', () => {
+    assert.match(L.clientNameError(clients, null, '  '), /obligatoire/);
+  });
+
+  test('doublon, sans tenir compte de la casse ni de soi-même', () => {
+    assert.match(L.clientNameError(clients, null, 'acme'), /existe déjà/);
+    assert.match(L.clientNameError(clients, 'c2', ' ACME '), /existe déjà/);
+    assert.equal(L.clientNameError(clients, 'c1', 'ACME'), '');
+    assert.equal(L.clientNameError(clients, null, 'Initech'), '');
+  });
+});
+
+describe('deleteClientBlocker', () => {
+  const projects = [project('p1', 'Site', 'Acme')];
+
+  test('un client avec des projets ne peut pas être supprimé', () => {
+    assert.match(L.deleteClientBlocker({ id: 'c-Acme', name: 'Acme' }, projects, 'Sans client'), /projet/);
+  });
+
+  test('le client par défaut est protégé', () => {
+    assert.match(L.deleteClientBlocker({ id: 'c0', name: 'sans client' }, [], 'Sans client'), /protégé/);
+  });
+
+  test('un client vide peut être supprimé', () => {
+    assert.equal(L.deleteClientBlocker({ id: 'c-Globex', name: 'Globex' }, projects, 'Sans client'), '');
+  });
+});
+
+describe('clientProjects', () => {
+  test('projets d’un client, année décroissante puis nom', () => {
+    const list = [
+      { ...project('p1', 'Zeta', 'Acme'), year: 2025 },
+      { ...project('p2', 'Alpha', 'Acme'), year: 2026 },
+      { ...project('p3', 'Beta', 'Acme'), year: 2026 },
+      { ...project('p4', 'Autre', 'Globex'), year: 2026 },
+    ];
+    assert.deepEqual(L.clientProjects(list, 'c-Acme').map((p) => p.id), ['p2', 'p3', 'p1']);
+  });
+});

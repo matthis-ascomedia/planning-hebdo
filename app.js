@@ -2,7 +2,8 @@ const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
-const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, buildLabel } = PlanningLogic;
+const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 const SESSION_KEY = 'planning_session';
@@ -14,6 +15,13 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.8.0', type: 'mineure', lot: 'Lot 8', date: '2026-10-12',
+    items: [
+      'Nouvel onglet Clients : fiche avec logo, site web et projets attachés.',
+      'Projets : année de la prestation, devis (lien) et liens d’accès rapide avec libellé.',
+    ],
+  },
   {
     version: '1.7.0', type: 'mineure', lot: 'Lot 7', date: '2026-10-12',
     items: [
@@ -69,6 +77,7 @@ let tasks = []; // tâches actives (planning + sas)
 let history = []; // tâches terminées puis archivées par « Nouvelle Semaine » (temps passé)
 let projects = [];
 let clients = [];
+let links = []; // liens d'accès rapide des projets (project_links)
 let session = null;
 
 // ---------- Authentification (Supabase Auth, RLS) ----------
@@ -139,6 +148,7 @@ const db = {
   remove: (id) => api('tasks', `?id=eq.${id}`, { method: 'DELETE' }),
   listProjects: () => api('projects', `?select=${PROJECT_SELECT}&order=created_at.asc`),
   listClients: () => api('clients', '?select=*&order=name.asc'),
+  listLinks: () => api('project_links', '?select=*&order=created_at.asc'),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -244,6 +254,7 @@ function render() {
 
   renderWaiting();
   renderArchives();
+  renderClients();
   $('#clients-list').innerHTML = clients.map((c) => `<option value="${esc(c.name)}"></option>`).join('');
   $('#projects-list').innerHTML = [...new Set(projects.map((p) => p.name))].map((n) => `<option value="${esc(n)}"></option>`).join('');
 }
@@ -319,7 +330,7 @@ function renderArchives() {
 }
 
 // Navigation par onglets (hash) : une vue #<nom>-view par onglet.
-const ROUTES = ['planning', 'archives'];
+const ROUTES = ['planning', 'clients', 'archives'];
 const currentRoute = () => routeOf(location.hash, ROUTES);
 
 function route() {
@@ -330,6 +341,7 @@ function route() {
     if (name === active) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   });
+  renderClients();
 }
 window.addEventListener('hashchange', route);
 
@@ -678,7 +690,11 @@ function openProject(id) {
   if (!p) return;
   projectEditForm.dataset.id = id;
   projectEditForm.project_name.value = p.name;
+  projectEditForm.year.value = p.year ?? '';
+  projectEditForm.quote_label.value = p.quote_label ?? '';
+  projectEditForm.quote_url.value = p.quote_url ?? '';
   $('#project-client').textContent = p.clients.name;
+  renderProjectLinks(p);
   $('#project-error').classList.add('hidden');
   const current = tasks.filter((t) => t.project_id === id);
   const past = history.filter((t) => t.project_id === id);
@@ -712,6 +728,58 @@ $('#project-plan').addEventListener('click', () => {
   prefillAdd(p);
 });
 
+// Liens d'accès rapide d'un projet (devis compris, en tête)
+const linkHTML = (label, url, extra = '') => `
+  <li class="flex items-center gap-2 text-sm">
+    <a href="${esc(url)}" target="_blank" rel="noopener noreferrer"
+       class="min-w-0 flex-1 truncate text-slate-700 underline decoration-slate-300 hover:decoration-slate-700">${esc(label)}</a>
+    ${extra}
+  </li>`;
+
+function renderProjectLinks(p) {
+  const own = links.filter((l) => l.project_id === p.id);
+  const quote = p.quote_url
+    ? linkHTML(p.quote_label || 'Devis', p.quote_url, '<span class="text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5">Devis</span>')
+    : '';
+  $('#project-links').innerHTML = quote + own.map((l) => linkHTML(l.label, l.url,
+    `<button type="button" class="text-slate-300 hover:text-red-500 text-base leading-none transition" data-delete-link="${l.id}"
+             title="Supprimer le lien" aria-label="Supprimer le lien ${esc(l.label)}">×</button>`)).join('')
+    || (quote ? '' : '<li class="text-sm text-slate-400">Aucun lien pour le moment.</li>');
+}
+
+$('#link-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const err = $('#project-error');
+  err.classList.add('hidden');
+  try {
+    const url = normalizeUrl(f.url.value);
+    if (!url) throw new Error('Le lien est obligatoire.');
+    const [created] = await api('project_links', '', {
+      method: 'POST',
+      body: { project_id: projectEditForm.dataset.id, label: f.label.value.trim(), url },
+      prefer: 'return=representation',
+    });
+    links.push(created);
+    f.reset();
+    renderProjectLinks(projects.find((x) => x.id === projectEditForm.dataset.id));
+    f.label.focus();
+  } catch (ex) {
+    console.error(ex);
+    err.textContent = ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message;
+    err.classList.remove('hidden');
+  }
+});
+
+$('#project-links').addEventListener('click', async (e) => {
+  const id = e.target.dataset.deleteLink;
+  if (!id) return;
+  const snapshot = links;
+  links = links.filter((l) => l.id !== id);
+  renderProjectLinks(projects.find((x) => x.id === projectEditForm.dataset.id));
+  run(() => api('project_links', `?id=eq.${id}`, { method: 'DELETE' }), () => { links = snapshot; });
+});
+
 projectEditForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target;
@@ -724,19 +792,24 @@ projectEditForm.addEventListener('submit', async (e) => {
     if (projects.some((x) => x.id !== p.id && x.client_id === p.client_id && same(x.name, name))) {
       throw new Error('Ce client a déjà un projet portant ce nom.');
     }
+    const year = parseYear(f.year.value);
+    const quoteUrl = normalizeUrl(f.quote_url.value);
+    const quoteLabel = f.quote_label.value.trim();
+    if (quoteLabel && !quoteUrl) throw new Error('Renseigne le lien du devis.');
+    const patch = { name, year, quote_label: quoteUrl ? quoteLabel : null, quote_url: quoteUrl || null };
+    await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: patch });
     if (name !== p.name) {
-      await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: { name } });
       await api('tasks', `?project_id=eq.${p.id}`, { method: 'PATCH', body: { project_name: name } });
-      p.name = name;
-      tasks.forEach((t) => {
+      tasks.concat(history).forEach((t) => {
         if (t.project_id !== p.id) return;
         t.project_name = name;
         if (t.projects) t.projects.name = name;
       });
     }
+    Object.assign(p, patch);
     projectDialog.close();
     render();
-    toast('Projet renommé');
+    toast('Projet enregistré');
   } catch (ex) {
     console.error(ex);
     err.textContent = ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message;
@@ -745,15 +818,20 @@ projectEditForm.addEventListener('submit', async (e) => {
 });
 
 // Archives : rouvrir un projet terminé (il retourne dans le sas s'il n'a pas de tâche planifiée)
-$('#archives-view').addEventListener('click', (e) => {
-  const id = e.target.dataset.reopen;
-  if (!id) return;
+function reopenProject(id) {
   const p = projects.find((x) => x.id === id);
   const prev = p.status;
   p.status = 'en_cours';
   render();
   run(() => api('projects', `?id=eq.${id}`, { method: 'PATCH', body: { status: 'en_cours' } }), () => { p.status = prev; });
-});
+}
+
+[$('#archives-view'), $('#clients-view')].forEach((view) => view.addEventListener('click', (e) => {
+  const reopen = e.target.dataset.reopen;
+  if (reopen) return reopenProject(reopen);
+  const open = e.target.closest('[data-open-project]')?.dataset.openProject;
+  if (open) openProject(open);
+}));
 
 $('#project-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -767,6 +845,194 @@ $('#project-form').addEventListener('submit', (e) => {
     f.reset();
     render();
   });
+});
+
+// ---------- Clients : liste et fiche (#clients/<id>) ----------
+const initials = (name) => esc(name.trim().slice(0, 2).toUpperCase());
+const logoHTML = (c, size) => c.logo
+  ? `<img src="${esc(c.logo)}" alt="" class="${size} rounded-lg object-cover bg-white border border-slate-200" />`
+  : `<span class="${size} rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-xs font-semibold text-slate-400">${initials(c.name)}</span>`;
+const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
+
+function renderClients() {
+  const id = currentRoute() === 'clients' ? routeParam(location.hash) : '';
+  const client = clients.find((c) => c.id === id);
+  $('#clients-index').classList.toggle('hidden', !!client);
+  $('#client-page').classList.toggle('hidden', !client);
+  $('#clients-count').textContent = clients.length;
+  if (client) return renderClientPage(client);
+  $('#client-edit-form').dataset.id = '';
+  const list = clients.map((c) => {
+    const ps = projects.filter((p) => p.client_id === c.id);
+    const open = ps.filter((p) => p.status === 'en_cours').length;
+    return `
+      <li>
+        <a href="#clients/${c.id}" class="flex items-center gap-3 bg-white border border-slate-200 rounded-xl p-3 shadow-sm hover:border-slate-300 transition">
+          ${logoHTML(c, 'w-12 h-12 shrink-0')}
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-medium truncate">${esc(c.name)}</span>
+            <span class="block text-xs text-slate-500 truncate">${c.website ? esc(hostOf(c.website)) : 'Pas de site web'}</span>
+            <span class="block text-xs text-slate-500">${ps.length} projet${ps.length > 1 ? 's' : ''}${open ? ` · ${open} en cours` : ''}</span>
+          </span>
+        </a>
+      </li>`;
+  });
+  $('#clients-grid').innerHTML = list.join('') || '<li class="text-sm text-slate-400">Aucun client pour le moment.</li>';
+}
+
+function renderClientPage(c) {
+  const f = $('#client-edit-form');
+  if (f.dataset.id !== c.id) { // première ouverture de cette fiche : on remplit le formulaire
+    f.dataset.id = c.id;
+    f.client_name.value = c.name;
+    f.website.value = c.website ?? '';
+    $('#client-error').classList.add('hidden');
+  }
+  $('#client-logo').innerHTML = c.logo
+    ? `<img src="${esc(c.logo)}" alt="Logo de ${esc(c.name)}" class="w-full h-full object-cover" />`
+    : initials(c.name);
+  $('#client-logo-clear').disabled = !c.logo;
+  const ps = clientProjects(projects, c.id);
+  $('#client-projects-count').textContent = ps.length;
+  $('#client-projects').innerHTML = ps.map((p) => `
+    <li class="flex items-center gap-2 py-2 text-sm">
+      <button type="button" class="min-w-0 flex-1 text-left truncate font-medium hover:underline" data-open-project="${p.id}">${esc(p.name)}</button>
+      <span class="text-xs text-slate-500 tabular-nums">${p.year ?? ''}</span>
+      ${p.status === 'termine'
+        ? `<span class="text-[11px] font-medium bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">Terminé</span>
+           <button type="button" class="text-xs font-medium px-2 py-1 rounded-lg border border-slate-200 hover:bg-slate-100 transition" data-reopen="${p.id}">Rouvrir</button>`
+        : '<span class="text-[11px] font-medium bg-emerald-50 text-emerald-700 rounded px-1.5 py-0.5">En cours</span>'}
+    </li>`).join('') || '<li class="py-2 text-sm text-slate-400">Aucun projet rattaché.</li>';
+  const blocker = deleteClientBlocker(c, projects, DEFAULT_CLIENT);
+  $('#client-delete').disabled = !!blocker;
+  $('#client-delete-reason').textContent = blocker;
+}
+
+const currentClient = () => clients.find((c) => c.id === $('#client-edit-form').dataset.id);
+
+function fail(el, ex) {
+  console.error(ex);
+  el.textContent = ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message;
+  el.classList.remove('hidden');
+}
+
+$('#client-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const err = $('#clients-error');
+  err.classList.add('hidden');
+  try {
+    const name = f.client_name.value.trim();
+    const msg = clientNameError(clients, null, name);
+    if (msg) throw new Error(msg);
+    const [created] = await api('clients', '', { method: 'POST', body: { name }, prefer: 'return=representation' });
+    clients.push(created);
+    clients.sort((a, b) => a.name.localeCompare(b.name));
+    f.reset();
+    location.hash = `#clients/${created.id}`;
+  } catch (ex) { fail(err, ex); }
+});
+
+$('#client-edit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const err = $('#client-error');
+  err.classList.add('hidden');
+  const c = currentClient();
+  try {
+    const name = f.client_name.value.trim();
+    const msg = clientNameError(clients, c.id, name);
+    if (msg) throw new Error(msg);
+    if (same(c.name, DEFAULT_CLIENT) && !same(name, DEFAULT_CLIENT)) throw new Error('Ce client par défaut ne peut pas être renommé.');
+    const website = normalizeUrl(f.website.value) || null;
+    await api('clients', `?id=eq.${c.id}`, { method: 'PATCH', body: { name, website } });
+    if (name !== c.name) {
+      const ids = projects.filter((p) => p.client_id === c.id).map((p) => p.id);
+      if (ids.length) await api('tasks', `?project_id=in.(${ids.join(',')})`, { method: 'PATCH', body: { client_name: name } });
+      projects.forEach((p) => { if (p.client_id === c.id) p.clients.name = name; });
+      tasks.concat(history).forEach((t) => {
+        if (!ids.includes(t.project_id)) return;
+        t.client_name = name;
+        if (t.projects?.clients) t.projects.clients.name = name;
+      });
+    }
+    Object.assign(c, { name, website });
+    clients.sort((a, b) => a.name.localeCompare(b.name));
+    render();
+    toast('Client enregistré');
+  } catch (ex) { fail(err, ex); }
+});
+
+// Logo : image redimensionnée à 128 px (côté le plus long) et stockée en data URL
+const LOGO_MAX = 128;
+function resizeLogo(file) {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) return reject(new Error('Ce fichier n’est pas une image.'));
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const ratio = Math.min(1, LOGO_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * ratio));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * ratio));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image illisible.')); };
+    img.src = url;
+  });
+}
+
+async function saveLogo(logo) {
+  const c = currentClient();
+  const err = $('#client-error');
+  err.classList.add('hidden');
+  try {
+    await api('clients', `?id=eq.${c.id}`, { method: 'PATCH', body: { logo } });
+    c.logo = logo;
+    render();
+  } catch (ex) { fail(err, ex); }
+}
+
+$('#client-logo-pick').addEventListener('click', () => $('#client-logo-file').click());
+$('#client-logo-clear').addEventListener('click', () => saveLogo(null));
+$('#client-logo-file').addEventListener('change', async (e) => {
+  const input = e.target;
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    await saveLogo(await resizeLogo(file));
+  } catch (ex) { fail($('#client-error'), ex); }
+});
+
+$('#client-project-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const c = currentClient();
+  const err = $('#client-error');
+  err.classList.add('hidden');
+  run(async () => {
+    const name = f.project_name.value.trim();
+    if (projects.some((p) => p.client_id === c.id && same(p.name, name))) throw new Error('Ce client a déjà un projet portant ce nom.');
+    await ensureProject(c.name, name);
+    f.reset();
+    render();
+  });
+});
+
+$('#client-delete').addEventListener('click', async () => {
+  const c = currentClient();
+  const err = $('#client-error');
+  if (deleteClientBlocker(c, projects, DEFAULT_CLIENT) || !confirm(`Supprimer le client « ${c.name} » ?`)) return;
+  try {
+    await api('clients', `?id=eq.${c.id}`, { method: 'DELETE' });
+    clients = clients.filter((x) => x.id !== c.id);
+    location.hash = '#clients';
+    render();
+    toast('Client supprimé');
+  } catch (ex) { fail(err, ex); }
 });
 
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
@@ -826,6 +1092,9 @@ const TOURS = {
       { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
         title: 'Les archives',
         content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },
+      { id: 'clients', targetSelector: '#tab-clients', placement: 'bottom', lot: 'Lot 8',
+        title: 'Les clients',
+        content: 'Chaque client a sa fiche : logo, site web et projets rattachés. Dans le détail d’un projet, ajoute l’année, le devis et des liens d’accès rapide.' },
       { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
         title: 'Nouvelle semaine',
         content: 'Les tâches terminées sont archivées dans l’historique de leur projet (le temps passé est conservé) et les autres reviennent sur Lundi.' },
@@ -970,6 +1239,7 @@ $('#logout').addEventListener('click', () => {
   history = [];
   projects = [];
   clients = [];
+  links = [];
   setAuthed(false);
 });
 
@@ -978,7 +1248,7 @@ async function start() {
   setAuthed(true);
   render();
   await run(async () => {
-    [clients, projects, tasks, history] = await Promise.all([db.listClients(), db.listProjects(), db.list(), db.listHistory()]);
+    [clients, projects, tasks, history, links] = await Promise.all([db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks()]);
     render();
   });
   setTimeout(() => startTour('onboarding-v1'), 400); // une seule fois (état mémorisé)

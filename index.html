@@ -77,6 +77,8 @@
     <nav id="tabs" data-lot="Lot 7" aria-label="Sections" class="flex gap-1 border-b border-slate-200 mb-6">
       <a id="tab-planning" href="#planning" data-tab="planning"
         class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Planning</a>
+      <a id="tab-clients" href="#clients" data-tab="clients" data-lot="Lot 8"
+        class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Clients</a>
       <a id="tab-archives" href="#archives" data-tab="archives" data-lot="Lot 2"
         class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Archives</a>
     </nav>
@@ -134,6 +136,64 @@
       </aside>
     </div>
 
+    <!-- Clients : liste, puis fiche d'un client (#clients/<id>) -->
+    <div id="clients-view" class="hidden" data-lot="Lot 8">
+      <div id="clients-index">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <h2 class="text-lg font-semibold tracking-tight">
+            Clients <span id="clients-count" class="ml-1 text-sm font-medium text-slate-500 tabular-nums">0</span>
+          </h2>
+          <form id="client-form" class="flex items-center gap-2">
+            <input name="client_name" required placeholder="Nouveau client" autocomplete="off" aria-label="Nom du nouveau client"
+              class="w-48 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+            <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">+ Client</button>
+          </form>
+        </div>
+        <p id="clients-error" class="hidden mb-3 text-sm text-red-700"></p>
+        <ul id="clients-grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3"></ul>
+      </div>
+
+      <div id="client-page" class="hidden max-w-2xl space-y-5">
+        <a href="#clients" class="inline-block text-sm text-slate-500 hover:text-slate-900 transition">← Tous les clients</a>
+        <form id="client-edit-form" class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3">
+          <div class="flex items-center gap-4">
+            <div id="client-logo" class="w-16 h-16 shrink-0 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center text-xl font-semibold text-slate-400"></div>
+            <div class="flex flex-wrap items-center gap-2">
+              <input id="client-logo-file" type="file" accept="image/*" class="hidden" />
+              <button type="button" id="client-logo-pick" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Choisir un logo</button>
+              <button type="button" id="client-logo-clear" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Retirer</button>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input name="client_name" required placeholder="Nom du client" autocomplete="off" aria-label="Nom du client" class="px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+            <input name="website" placeholder="Site web (ex. acme.fr)" autocomplete="off" aria-label="Site web" class="px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          </div>
+          <p id="client-error" class="hidden text-sm text-red-700"></p>
+          <div class="flex justify-end">
+            <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Enregistrer</button>
+          </div>
+        </form>
+
+        <section class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold">Projets attachés <span id="client-projects-count" class="ml-1 text-xs font-medium text-slate-500 tabular-nums">0</span></h3>
+            <form id="client-project-form" class="flex items-center gap-2">
+              <input name="project_name" required placeholder="Nouveau projet" autocomplete="off" aria-label="Nom du nouveau projet"
+                class="w-44 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+              <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">+ Projet</button>
+            </form>
+          </div>
+          <ul id="client-projects" class="divide-y divide-slate-100"></ul>
+        </section>
+
+        <div class="flex items-center justify-between gap-3">
+          <p id="client-delete-reason" class="text-xs text-slate-500"></p>
+          <button type="button" id="client-delete"
+            class="px-3.5 py-2 text-sm font-medium rounded-lg border border-red-200 text-red-700 bg-white hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-white transition">Supprimer le client</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Page Archives : projets terminés -->
     <div id="archives-view" class="hidden" data-lot="Lot 2">
       <h2 class="text-lg font-semibold tracking-tight mb-4">
@@ -181,19 +241,41 @@
 
   <!-- Détail d'un projet (clic sur un dossier du sas) -->
   <dialog id="project-dialog" aria-labelledby="project-title" data-lot="Lot 3"
-    class="m-auto w-[92vw] max-w-md rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    class="m-auto w-[92vw] max-w-lg rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
     <div class="p-5 space-y-4">
       <div>
         <h2 id="project-title" class="text-base font-semibold tracking-tight">Détail du projet</h2>
         <p class="text-sm text-slate-500">Client : <span id="project-client"></span></p>
       </div>
-      <form id="project-edit-form" class="flex gap-2">
-        <input name="project_name" required autocomplete="off" aria-label="Nom du projet"
-          class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
-        <button type="submit"
-          class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Renommer</button>
+      <form id="project-edit-form" class="space-y-2">
+        <div class="flex gap-2">
+          <input name="project_name" required autocomplete="off" aria-label="Nom du projet"
+            class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          <input name="year" required inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Année" placeholder="Année"
+            class="w-20 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+        </div>
+        <div class="grid grid-cols-5 gap-2" data-lot="Lot 8">
+          <input name="quote_label" autocomplete="off" aria-label="Libellé du devis" placeholder="Devis (libellé)"
+            class="col-span-2 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          <input name="quote_url" autocomplete="off" aria-label="Lien du devis" placeholder="Lien du devis"
+            class="col-span-3 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+        </div>
+        <div class="flex justify-end">
+          <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Enregistrer</button>
+        </div>
       </form>
       <p id="project-error" class="hidden text-sm text-red-700"></p>
+      <div data-lot="Lot 8" class="space-y-2">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Accès rapide</h3>
+        <ul id="project-links" class="space-y-1"></ul>
+        <form id="link-form" class="flex gap-2">
+          <input name="label" required autocomplete="off" aria-label="Libellé du lien" placeholder="Libellé"
+            class="w-1/3 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          <input name="url" required autocomplete="off" aria-label="Adresse du lien" placeholder="Lien (https://…)"
+            class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Ajouter</button>
+        </form>
+      </div>
       <dl id="project-stats" class="grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-3"></dl>
       <ul id="project-tasks" class="max-h-64 overflow-y-auto"></ul>
       <div class="flex justify-between gap-2 pt-1">
