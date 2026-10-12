@@ -21,6 +21,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.11.1', type: 'patch', lot: 'Lot 11', date: '2026-10-12',
+    items: [
+      'Cartes du planning : titre sur toute la largeur (actions ✎ / × en surimpression au survol).',
+      'Mobile : en-tête et onglets sans débordement (la page n’est plus dézoomée).',
+      'Corrections visuelles : champ « Nouveau client », boutons de la fenêtre « Nouvelle Semaine », ordre du tutoriel.',
+    ],
+  },
+  {
     version: '1.11.0', type: 'mineure', lot: 'Lot 11', date: '2026-10-12',
     items: [
       'Nouvel onglet Historique : une fiche par semaine close (tâches terminées, reportées, temps par client).',
@@ -251,26 +259,29 @@ async function run(action, rollback) {
 function cardHTML(t) {
   const done = t.is_completed;
   return `
-    <article class="card group bg-white border border-slate-200 rounded-lg p-3 shadow-sm cursor-grab active:cursor-grabbing hover:border-slate-300 transition ${done ? 'opacity-60' : ''}"
+    <article class="card group relative bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing hover:border-slate-300 transition ${done ? 'opacity-60' : ''}"
              draggable="true" data-id="${t.id}">
-      <div class="flex items-start gap-2.5">
+      <div class="flex items-start gap-2">
         <input type="checkbox" class="chk mt-0.5" ${done ? 'checked' : ''} data-toggle="${t.id}" aria-label="Terminée" />
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-medium leading-snug break-words ${done ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</p>
+          <p class="text-sm font-medium leading-snug break-words hyphens-auto ${done ? 'line-through text-slate-400' : ''}" lang="fr">${esc(t.task_name)}</p>
           <p class="text-xs text-slate-500 mt-1 truncate">${esc(taskClient(t))} · ${esc(taskProject(t))}</p>
         </div>
-        <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-slate-700 text-sm leading-none transition"
+      </div>
+      <!-- Actions en surimpression au survol : le titre garde toute la largeur de la carte -->
+      <div class="absolute top-1.5 right-1.5 flex items-center gap-0.5 rounded-md bg-white/95 px-1 py-0.5 shadow-sm ring-1 ring-slate-200 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+        <button class="text-slate-400 hover:text-slate-900 text-sm leading-none px-0.5"
                 data-edit="${t.id}" data-lot="Lot 1" title="Modifier" aria-label="Modifier">✎</button>
-        <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 text-base leading-none transition"
+        <button class="text-slate-400 hover:text-red-500 text-base leading-none px-0.5"
                 data-delete="${t.id}" title="Supprimer" aria-label="Supprimer">×</button>
       </div>
-      <div class="mt-2 pl-[26px] flex flex-wrap items-center gap-1.5">
+      <div class="mt-2 flex flex-wrap items-center gap-1.5">
         <span class="inline-block text-[11px] font-medium text-slate-600 bg-slate-100 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
         ${commentBadgeHTML(t)}
       </div>
       ${showLinks ? cardLinksHTML(t) : ''}
-      ${openComments.has(t.id) ? `<ul class="mt-2 pl-[26px] space-y-1" data-lot="Lot 10">${taskComments(t.id).map(commentHTML).join('')}</ul>` : ''}
-      <form class="mt-2 pl-[26px]" data-comment-form="${t.id}" data-lot="Lot 10">
+      ${openComments.has(t.id) ? `<ul class="mt-2 space-y-1" data-lot="Lot 10">${taskComments(t.id).map(commentHTML).join('')}</ul>` : ''}
+      <form class="mt-2" data-comment-form="${t.id}" data-lot="Lot 10">
         <input name="body" autocomplete="off" maxlength="2000" placeholder="Commenter…" aria-label="Ajouter un commentaire à « ${esc(t.task_name)} »"
           class="w-full px-2 py-1 text-xs rounded-md bg-slate-50 border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-slate-300 focus:outline-none" />
       </form>
@@ -306,7 +317,7 @@ function commentHTML(c) {
 function cardLinksHTML(t) {
   const list = linksOf(projects.find((p) => p.id === t.project_id), links);
   if (!list.length) return '';
-  return `<div class="mt-1.5 pl-[26px] flex flex-wrap gap-1" data-lot="Lot 10">${list.map((l) => `
+  return `<div class="mt-1.5 flex flex-wrap gap-1" data-lot="Lot 10">${list.map((l) => `
     <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="${esc(l.url)}"
        class="max-w-full truncate text-[11px] font-medium rounded px-1.5 py-0.5 border transition ${l.quote
          ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
@@ -845,6 +856,7 @@ $('#new-week').addEventListener('click', () => {
   $('#week-summary').textContent = `${finished} tâche${finished > 1 ? 's' : ''} terminée${finished > 1 ? 's' : ''} au total`
     + (others > 1 ? ` : les ${others} autres seront archivées dans tous les cas.`
       : others ? ' : l’autre sera archivée dans tous les cas.' : '.');
+  $('#week-keep').title = weekPending.length > 1 ? 'Garder ces tâches dans le planning cette semaine' : 'Garder cette tâche dans le planning cette semaine';
   weekDialog.showModal();
 });
 
@@ -1484,15 +1496,15 @@ const TOURS = {
       { id: 'sas-search', targetSelector: '#sas-search', placement: 'top', lot: 'Lot 9',
         title: 'Recherche rapide',
         content: 'Tape un client ou un projet pour filtrer le sas et ouvrir sa fiche d’un clic (Entrée ouvre le premier résultat). Le bouton Clients regroupe le sas par client.' },
-      { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
-        title: 'Les archives',
-        content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },
       { id: 'history', targetSelector: '#tab-history', placement: 'bottom', lot: 'Lot 11',
         title: 'L’historique des semaines',
         content: 'Chaque « Nouvelle Semaine » enregistre ici la semaine close : tâches terminées et reportées, temps par client, et commentaires restés non traités.' },
       { id: 'clients', targetSelector: '#tab-clients', placement: 'bottom', lot: 'Lot 8',
         title: 'Les clients',
         content: 'Chaque client a sa fiche : logo, site web et projets rattachés. Dans le détail d’un projet, ajoute l’année, le devis et des liens d’accès rapide.' },
+      { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
+        title: 'Les archives',
+        content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },
       { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
         title: 'Nouvelle semaine',
         content: 'Les tâches terminées sont archivées (le temps passé est conservé), la semaine est enregistrée dans l’onglet Historique et les autres tâches reviennent sur Lundi.' },

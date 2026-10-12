@@ -47,29 +47,29 @@
     </form>
   </div>
 
-  <div id="app" class="hidden max-w-[1400px] 2xl:max-w-[1700px] mx-auto px-5 sm:px-8 py-8">
+  <div id="app" class="hidden max-w-[1400px] 2xl:max-w-[1700px] mx-auto px-4 sm:px-8 py-6 sm:py-8">
 
     <header class="flex flex-wrap items-center justify-between gap-4 mb-6">
       <div>
         <h1 class="text-xl font-semibold tracking-tight">Planning hebdomadaire</h1>
         <p id="summary" class="text-sm text-slate-500 mt-0.5">&nbsp;</p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <input id="import-file" type="file" accept=".json,application/json" class="hidden" />
         <button id="import-json"
-          class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
+          class="whitespace-nowrap text-sm font-medium px-3 sm:px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
           Importer JSON
         </button>
         <button id="new-week"
-          class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
+          class="whitespace-nowrap text-sm font-medium px-3 sm:px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
           Nouvelle Semaine
         </button>
         <button id="toggle-links" type="button" aria-pressed="true" data-lot="Lot 10" title="Afficher ou masquer les liens sur les cartes"
-          class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 aria-[pressed=true]:bg-slate-900 aria-[pressed=true]:text-white aria-[pressed=true]:border-slate-900 active:scale-[.98] transition">
+          class="whitespace-nowrap text-sm font-medium px-3 sm:px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 aria-[pressed=true]:bg-slate-900 aria-[pressed=true]:text-white aria-[pressed=true]:border-slate-900 active:scale-[.98] transition">
           Liens
         </button>
         <button id="open-changelog"
-          class="relative text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
+          class="relative whitespace-nowrap text-sm font-medium px-3 sm:px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
           Nouveautés
           <span id="changelog-dot" class="hidden absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-500" aria-label="Nouvelles mises à jour"></span>
         </button>
@@ -78,15 +78,15 @@
     </header>
 
     <!-- Onglets -->
-    <nav id="tabs" data-lot="Lot 7" aria-label="Sections" class="flex gap-1 border-b border-slate-200 mb-6">
+    <nav id="tabs" data-lot="Lot 7" aria-label="Sections" class="flex gap-1 overflow-x-auto shadow-[inset_0_-1px_0_#e2e8f0] mb-6">
       <a id="tab-planning" href="#planning" data-tab="planning"
-        class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Planning</a>
+        class="shrink-0 whitespace-nowrap px-3 sm:px-3.5 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Planning</a>
       <a id="tab-history" href="#history" data-tab="history" data-lot="Lot 11"
-        class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Historique</a>
+        class="shrink-0 whitespace-nowrap px-3 sm:px-3.5 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Historique</a>
       <a id="tab-clients" href="#clients" data-tab="clients" data-lot="Lot 8"
-        class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Clients</a>
+        class="shrink-0 whitespace-nowrap px-3 sm:px-3.5 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Clients</a>
       <a id="tab-archives" href="#archives" data-tab="archives" data-lot="Lot 2"
-        class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Archives</a>
+        class="shrink-0 whitespace-nowrap px-3 sm:px-3.5 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Archives</a>
     </nav>
 
     <!-- Planning : kanban + ajout (2/3) | sas d'attente (1/3) -->
@@ -172,7 +172,7 @@
           </h2>
           <form id="client-form" class="flex items-center gap-2">
             <input name="client_name" required placeholder="Nouveau client" autocomplete="off" aria-label="Nom du nouveau client"
-              class="w-48 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+              class="w-48 px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" />
             <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">+ Client</button>
           </form>
         </div>
@@ -335,7 +335,7 @@
 
   <!-- Nouvelle semaine : tâches terminées avec commentaires non traités -->
   <dialog id="week-dialog" aria-labelledby="week-title" data-lot="Lot 10"
-    class="m-auto w-[92vw] max-w-md rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    class="m-auto w-[92vw] max-w-lg rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
     <div class="p-5 space-y-3">
       <h2 id="week-title" class="text-base font-semibold tracking-tight">Commentaires non traités</h2>
       <p class="text-sm text-slate-600">Ces tâches terminées ont encore des commentaires non traités. Si tu les archives, les commentaires resteront visibles dans le détail du projet.</p>
@@ -345,7 +345,7 @@
         <button type="button" id="week-cancel"
           class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
         <button type="button" id="week-keep"
-          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Garder ces tâches dans le planning</button>
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Garder dans le planning</button>
         <button type="button" id="week-archive"
           class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Archiver quand même</button>
       </div>
@@ -381,7 +381,7 @@
       <h2 id="tour-title" class="text-base font-semibold tracking-tight"></h2>
       <p id="tour-content" class="text-sm text-slate-600"></p>
       <div class="flex items-center justify-between pt-2">
-        <span id="tour-progress" class="text-xs text-slate-500 tabular-nums"></span>
+        <span id="tour-progress" class="text-xs text-slate-500 tabular-nums whitespace-nowrap"></span>
         <div class="flex items-center gap-1.5">
           <button id="tour-skip" class="text-sm text-slate-500 hover:text-slate-900 px-2 py-1.5 transition">Passer</button>
           <button id="tour-prev"
