@@ -3,11 +3,13 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
-  normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects } = PlanningLogic;
+  normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
+  searchEntities, filterProjects, groupByClient } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 const SESSION_KEY = 'planning_session';
 const SEEN_KEY = 'planning_changelog_seen';
+const SAS_VIEW_KEY = 'planning_sas_view';
 const DEFAULT_CLIENT = 'Sans client';
 const DEFAULT_PROJECT = 'Sans projet';
 const TASK_SELECT = '*,projects(id,name,status,clients(id,name))';
@@ -15,6 +17,13 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.9.0', type: 'mineure', lot: 'Lot 9', date: '2026-10-12',
+    items: [
+      'Sas d’attente : recherche rapide d’un client ou d’un projet, avec accès direct à sa fiche.',
+      'Sas d’attente : affichage par projet ou regroupé par client (choix mémorisé).',
+    ],
+  },
   {
     version: '1.8.0', type: 'mineure', lot: 'Lot 8', date: '2026-10-12',
     items: [
@@ -273,32 +282,113 @@ function parkedHTML(t) {
     </article>`;
 }
 
+// Affichage du sas : par projet (liste) ou par client (groupes) ; recherche rapide en direct.
+let sasView = 'project';
+try { if (localStorage.getItem(SAS_VIEW_KEY) === 'client') sasView = 'client'; } catch { /* stockage indisponible */ }
+let sasQuery = '';
+
+function folderHTML(p, { showClient }) {
+  const list = parkedTasks(tasks, p.id);
+  return `
+    <li class="folder bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing" data-lot="Lot 3"
+        draggable="true" data-folder="${p.id}">
+      <div class="flex items-start gap-1">
+        <button class="min-w-0 flex-1 text-left" data-open="${p.id}" title="Détail du projet">
+          <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
+          ${showClient ? `<span class="block text-xs text-slate-500 truncate">${esc(p.clients.name)}</span>` : ''}
+        </button>
+        <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"
+                title="Archiver le projet (terminé)">Archiver</button>
+      </div>
+      <div class="mt-2 flex flex-col gap-1.5">
+        ${list.length ? list.map(parkedHTML).join('') : '<p class="text-xs text-slate-400">Aucune tâche rangée.</p>'}
+      </div>
+    </li>`;
+}
+
 // Sas d'attente : projets en cours sans tâche planifiée dans la semaine, ou ayant des tâches rangées dans leur dossier.
 function renderWaiting() {
-  const parked = (p) => parkedTasks(tasks, p.id);
-  const waiting = waitingProjects(projects, tasks);
+  const waiting = filterProjects(waitingProjects(projects, tasks), sasQuery);
   $('#waiting-count').textContent = waiting.length;
-  $('#waiting-list').innerHTML = waiting.length
-    ? waiting.map((p) => {
-      const list = parked(p);
-      return `
-        <li class="folder bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing" data-lot="Lot 3"
-            draggable="true" data-folder="${p.id}">
-          <div class="flex items-start gap-1">
-            <button class="min-w-0 flex-1 text-left" data-open="${p.id}" title="Détail du projet">
-              <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
-              <span class="block text-xs text-slate-500 truncate">${esc(p.clients.name)}</span>
-            </button>
-            <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"
-                    title="Archiver le projet (terminé)">Archiver</button>
-          </div>
-          <div class="mt-2 flex flex-col gap-1.5">
-            ${list.length ? list.map(parkedHTML).join('') : '<p class="text-xs text-slate-400">Aucune tâche rangée.</p>'}
-          </div>
-        </li>`;
-    }).join('')
-    : '<li class="text-sm text-slate-400 py-1">Tous les projets en cours ont au moins une tâche cette semaine.</li>';
+  document.querySelectorAll('[data-sas-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sasView === sasView)));
+  let html;
+  if (!waiting.length) {
+    html = `<li class="text-sm text-slate-400 py-1">${sasQuery.trim()
+      ? 'Aucun projet du sas ne correspond à la recherche.'
+      : 'Tous les projets en cours ont au moins une tâche cette semaine.'}</li>`;
+  } else if (sasView === 'client') {
+    html = groupByClient(waiting).map((g) => `
+      <li data-lot="Lot 9">
+        <h3 class="flex items-center gap-2 px-1 pb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          ${logoHTML(clients.find((c) => c.id === g.client.id) || g.client, 'w-5 h-5 shrink-0')}
+          <span class="truncate">${esc(g.client.name)}</span>
+          <span class="font-medium tabular-nums">${g.projects.length}</span>
+        </h3>
+        <ul class="grid grid-cols-1 gap-2">${g.projects.map((p) => folderHTML(p, { showClient: false })).join('')}</ul>
+      </li>`).join('');
+  } else {
+    html = waiting.map((p) => folderHTML(p, { showClient: true })).join('');
+  }
+  $('#waiting-list').innerHTML = html;
+  renderSasResults();
 }
+
+// Résultats de la recherche rapide : clients puis projets (terminés compris), accès direct à la fiche.
+function renderSasResults() {
+  const box = $('#sas-results');
+  const hits = searchEntities(clients, projects, sasQuery);
+  const n = hits.clients.length + hits.projects.length;
+  box.classList.toggle('hidden', !sasQuery.trim());
+  if (!sasQuery.trim()) return;
+  const row = (attr, id, title, sub, badge) => `
+    <li><button type="button" ${attr}="${id}" class="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-sm hover:bg-slate-50 focus-visible:bg-slate-50 transition">
+      <span class="min-w-0 flex-1"><span class="block truncate font-medium">${esc(title)}</span><span class="block truncate text-xs text-slate-500">${esc(sub)}</span></span>
+      ${badge}
+    </button></li>`;
+  const tag = (t, cls = 'bg-slate-100 text-slate-600') => `<span class="shrink-0 text-[11px] font-medium ${cls} rounded px-1.5 py-0.5">${t}</span>`;
+  box.innerHTML = n
+    ? hits.clients.map((c) => row('data-result-client', c.id, c.name, c.website ? hostOf(c.website) : 'Fiche client', tag('Client'))).join('')
+      + hits.projects.map((p) => row('data-result-project', p.id, p.name, `${p.clients.name}${p.year ? ` · ${p.year}` : ''}`,
+        p.status === 'termine' ? tag('Terminé') : tag('Projet', 'bg-emerald-50 text-emerald-700'))).join('')
+    : '<li class="px-2.5 py-2 text-sm text-slate-400">Aucun client ni projet trouvé.</li>';
+}
+
+function openResult(target) {
+  const clientId = target.closest('[data-result-client]')?.dataset.resultClient;
+  const projectId = target.closest('[data-result-project]')?.dataset.resultProject;
+  if (!clientId && !projectId) return false;
+  sasQuery = '';
+  $('#sas-search').value = '';
+  renderWaiting();
+  if (clientId) location.hash = `#clients/${clientId}`;
+  else openProject(projectId);
+  return true;
+}
+
+$('#sas-search').addEventListener('input', (e) => {
+  sasQuery = e.target.value;
+  renderWaiting();
+});
+
+$('#sas-search').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    sasQuery = '';
+    e.target.value = '';
+    renderWaiting();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const first = $('#sas-results button');
+    if (first) openResult(first);
+  }
+});
+
+$('#sas-view').addEventListener('click', (e) => {
+  const view = e.target.dataset.sasView;
+  if (!view) return;
+  sasView = view;
+  try { localStorage.setItem(SAS_VIEW_KEY, view); } catch { /* stockage indisponible */ }
+  renderWaiting();
+});
 
 // Page Archives : projets terminés, groupés par client.
 function renderArchives() {
@@ -668,6 +758,7 @@ editForm.addEventListener('submit', async (e) => {
 
 // Sas d'attente
 $('#waiting').addEventListener('click', (e) => {
+  if (openResult(e.target)) return;
   const openId = e.target.closest('[data-open]')?.dataset.open;
   const finishId = e.target.closest('[data-finish]')?.dataset.finish;
   if (openId) {
@@ -1089,6 +1180,9 @@ const TOURS = {
       { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 3',
         title: 'Le sas d’attente',
         content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, son temps passé et le renommer.' },
+      { id: 'sas-search', targetSelector: '#sas-search', placement: 'top', lot: 'Lot 9',
+        title: 'Recherche rapide',
+        content: 'Tape un client ou un projet pour filtrer le sas et ouvrir sa fiche d’un clic (Entrée ouvre le premier résultat). Le bouton Clients regroupe le sas par client.' },
       { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
         title: 'Les archives',
         content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },

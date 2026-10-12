@@ -310,3 +310,71 @@ describe('clientProjects', () => {
     assert.deepEqual(L.clientProjects(list, 'c-Acme').map((p) => p.id), ['p2', 'p3', 'p1']);
   });
 });
+
+describe('normalizeText', () => {
+  test('minuscules, sans accents ni espaces superflus', () => {
+    assert.equal(L.normalizeText('  Éléphant  Rôti '), 'elephant roti');
+  });
+});
+
+describe('searchEntities', () => {
+  const clients = [{ id: 'c-Acme', name: 'Acme' }, { id: 'c-Globex', name: 'Globex' }, { id: 'c-Café', name: 'Café Martin' }];
+  const projects = [
+    { ...project('p1', 'Site vitrine', 'Acme'), year: 2026 },
+    { ...project('p2', 'Refonte Acme Pro', 'Globex'), year: 2025 },
+    { ...project('p3', 'Ancien site', 'Acme', 'termine'), year: 2024 },
+    { ...project('p4', 'Menu', 'Café'), year: 2026 },
+  ];
+
+  test('requête vide : aucun résultat', () => {
+    assert.deepEqual(L.searchEntities(clients, projects, '  '), { clients: [], projects: [] });
+  });
+
+  test('trouve clients et projets, sans tenir compte de la casse ni des accents', () => {
+    const r = L.searchEntities(clients, projects, 'CAFE');
+    assert.deepEqual(r.clients.map((c) => c.id), ['c-Café']);
+    assert.deepEqual(r.projects.map((p) => p.id), ['p4']); // via le nom du client
+  });
+
+  test('un projet est trouvé par son nom ou par celui de son client', () => {
+    const r = L.searchEntities(clients, projects, 'acme');
+    assert.deepEqual(r.clients.map((c) => c.id), ['c-Acme']);
+    assert.deepEqual(r.projects.map((p) => p.id).sort(), ['p1', 'p2', 'p3']);
+  });
+
+  test('les projets terminés restent trouvables', () => {
+    assert.deepEqual(L.searchEntities(clients, projects, 'ancien').projects.map((p) => p.id), ['p3']);
+  });
+
+  test('les noms qui commencent par la requête passent en premier', () => {
+    const r = L.searchEntities(clients, projects, 'site');
+    assert.deepEqual(r.projects.map((p) => p.id), ['p1', 'p3']);
+  });
+});
+
+describe('filterProjects', () => {
+  const list = [project('p1', 'Site vitrine', 'Acme'), project('p2', 'Intranet', 'Globex')];
+
+  test('requête vide : tout est conservé', () => {
+    assert.equal(L.filterProjects(list, '').length, 2);
+  });
+
+  test('filtre sur le nom du projet ou du client', () => {
+    assert.deepEqual(L.filterProjects(list, 'intra').map((p) => p.id), ['p2']);
+    assert.deepEqual(L.filterProjects(list, 'acme').map((p) => p.id), ['p1']);
+    assert.deepEqual(L.filterProjects(list, 'zzz'), []);
+  });
+});
+
+describe('groupByClient', () => {
+  test('regroupe par client, clients et projets triés par nom', () => {
+    const list = [project('p1', 'Zeta', 'Globex'), project('p2', 'Beta', 'Acme'), project('p3', 'Alpha', 'Acme')];
+    const groups = L.groupByClient(list);
+    assert.deepEqual(groups.map((g) => g.client.name), ['Acme', 'Globex']);
+    assert.deepEqual(groups[0].projects.map((p) => p.id), ['p3', 'p2']);
+  });
+
+  test('liste vide', () => {
+    assert.deepEqual(L.groupByClient([]), []);
+  });
+});

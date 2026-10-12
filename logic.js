@@ -84,6 +84,51 @@
     return row;
   }
 
+  // Texte comparable : minuscules, sans accents, espaces réduits.
+  const normalizeText = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+
+  // Recherche rapide : clients par nom, projets par nom ou par nom de client (terminés inclus).
+  // Les noms qui commencent par la requête passent avant les autres.
+  function searchEntities(clients, projects, query, limit = 8) {
+    const q = normalizeText(query);
+    if (!q) return { clients: [], projects: [] };
+    const rank = (...names) => {
+      const ns = names.map(normalizeText);
+      if (ns[0].startsWith(q)) return 0;
+      return ns.some((n) => n.includes(q)) ? 1 : -1;
+    };
+    const pick = (list, ranker) => list
+      .map((x) => ({ x, r: ranker(x) }))
+      .filter((m) => m.r >= 0)
+      .sort((a, b) => a.r - b.r || a.x.name.localeCompare(b.x.name))
+      .slice(0, limit)
+      .map((m) => m.x);
+    return {
+      clients: pick(clients, (c) => rank(c.name)),
+      projects: pick(projects, (p) => rank(p.name, p.clients.name)),
+    };
+  }
+
+  // Filtre en direct des projets du sas (nom du projet ou du client) ; requête vide : tout.
+  function filterProjects(projects, query) {
+    const q = normalizeText(query);
+    if (!q) return projects;
+    return projects.filter((p) => normalizeText(p.name).includes(q) || normalizeText(p.clients.name).includes(q));
+  }
+
+  // Projets regroupés par client (clients et projets triés par nom).
+  function groupByClient(projects) {
+    const groups = new Map();
+    projects.forEach((p) => {
+      if (!groups.has(p.client_id)) groups.set(p.client_id, { client: { id: p.client_id, name: p.clients.name }, projects: [] });
+      groups.get(p.client_id).projects.push(p);
+    });
+    return [...groups.values()]
+      .sort((a, b) => a.client.name.localeCompare(b.client.name))
+      .map((g) => ({ ...g, projects: g.projects.sort((a, b) => a.name.localeCompare(b.name)) }));
+  }
+
   // Onglet affiché pour un hash d'URL (« #clients/<id> » reste dans « clients ») :
   // « planning » par défaut (hash vide ou inconnu).
   function routeOf(hash, routes) {
@@ -137,5 +182,5 @@
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
   return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
-    normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects };
+    normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects };
 }));
