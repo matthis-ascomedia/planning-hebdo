@@ -452,3 +452,69 @@ describe('linksOf', () => {
     assert.deepEqual(L.linksOf(null, []), []);
   });
 });
+
+describe('weekSnapshot', () => {
+  const withClient = (over, name) => task({ ...over, client_name: name });
+
+  test('terminées (archivées), reportées (planifiées restantes) et répartition par client', () => {
+    const list = [
+      withClient({ id: 'a', is_completed: true, estimated_hours: 2 }, 'Acme'),
+      withClient({ id: 'b', is_completed: true, estimated_hours: 3 }, 'Globex'),
+      withClient({ id: 'c', is_completed: true, estimated_hours: 1.5 }, 'Acme'),
+      withClient({ id: 'd', is_completed: false, estimated_hours: 4, day_of_week: 'Jeudi' }, 'Acme'),
+      withClient({ id: 'e', is_completed: false, estimated_hours: 9, day_of_week: null }, 'Acme'), // sas : ni l'un ni l'autre
+    ];
+    const s = L.weekSnapshot(list);
+    assert.equal(s.finished_count, 3);
+    assert.equal(s.finished_hours, 6.5);
+    assert.equal(s.carried_count, 1);
+    assert.equal(s.carried_hours, 4);
+    assert.deepEqual(s.by_client, [{ client: 'Acme', count: 2, hours: 3.5 }, { client: 'Globex', count: 1, hours: 3 }]);
+  });
+
+  test('une tâche terminée gardée compte comme reportée', () => {
+    const list = [task({ id: 'k', is_completed: true, estimated_hours: 2, day_of_week: 'Mardi', client_name: 'Acme' })];
+    const s = L.weekSnapshot(list, ['k']);
+    assert.equal(s.finished_count, 0);
+    assert.equal(s.carried_count, 1);
+    assert.deepEqual(s.by_client, []);
+  });
+
+  test('le client vient du projet joint s’il existe', () => {
+    const t = task({ is_completed: true, client_name: 'Ancien nom', projects: { clients: { name: 'Nouveau nom' } } });
+    assert.equal(L.weekSnapshot([t]).by_client[0].client, 'Nouveau nom');
+  });
+});
+
+describe('weekPeriods', () => {
+  test('ordre décroissant ; chaque semaine commence à la clôture précédente', () => {
+    const weeks = [
+      { id: 'w1', closed_at: '2026-09-28T08:00:00Z' },
+      { id: 'w3', closed_at: '2026-10-12T08:00:00Z' },
+      { id: 'w2', closed_at: '2026-10-05T08:00:00Z' },
+    ];
+    const res = L.weekPeriods(weeks);
+    assert.deepEqual(res.map((w) => [w.id, w.from]), [
+      ['w3', '2026-10-05T08:00:00Z'],
+      ['w2', '2026-09-28T08:00:00Z'],
+      ['w1', null],
+    ]);
+  });
+});
+
+describe('weekTasks', () => {
+  test('par week_id, ou par date d’archivage pour les tâches non rattachées', () => {
+    const week = { id: 'w1', closed_at: '2026-10-12T08:00:00Z' };
+    const history = [
+      task({ id: 'a', week_id: 'w1', archived_at: '2026-10-12T08:00:00Z' }),
+      task({ id: 'b', week_id: null, archived_at: '2026-10-12T08:00:00Z' }),
+      task({ id: 'c', week_id: 'w0', archived_at: '2026-10-05T08:00:00Z' }),
+    ];
+    assert.deepEqual(L.weekTasks(history, week).map((t) => t.id), ['a', 'b']);
+  });
+
+  test('compare les dates, pas leur écriture', () => {
+    const week = { id: 'w1', closed_at: '2026-10-12T08:00:00+00:00' };
+    assert.equal(L.weekTasks([task({ id: 'a', archived_at: '2026-10-12T08:00:00.000Z' })], week).length, 1);
+  });
+});

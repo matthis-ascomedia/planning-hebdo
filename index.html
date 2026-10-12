@@ -81,6 +81,8 @@
     <nav id="tabs" data-lot="Lot 7" aria-label="Sections" class="flex gap-1 border-b border-slate-200 mb-6">
       <a id="tab-planning" href="#planning" data-tab="planning"
         class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Planning</a>
+      <a id="tab-history" href="#history" data-tab="history" data-lot="Lot 11"
+        class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Historique</a>
       <a id="tab-clients" href="#clients" data-tab="clients" data-lot="Lot 8"
         class="px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Clients</a>
       <a id="tab-archives" href="#archives" data-tab="archives" data-lot="Lot 2"
@@ -151,6 +153,14 @@
           <ul id="waiting-list" class="grid grid-cols-1 gap-2 items-start"></ul>
         </section>
       </aside>
+    </div>
+
+    <!-- Historique des semaines closes par « Nouvelle Semaine » -->
+    <div id="history-view" class="hidden" data-lot="Lot 11">
+      <h2 class="text-lg font-semibold tracking-tight mb-4">
+        Historique des semaines <span id="weeks-count" class="ml-1 text-sm font-medium text-slate-500 tabular-nums">0</span>
+      </h2>
+      <div id="weeks-list" class="space-y-3 max-w-3xl"></div>
     </div>
 
     <!-- Clients : liste, puis fiche d'un client (#clients/<id>) -->

@@ -5,7 +5,8 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
-  pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf } = PlanningLogic;
+  pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
+  weekSnapshot, weekPeriods, weekTasks } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 const SESSION_KEY = 'planning_session';
@@ -19,6 +20,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.11.0', type: 'mineure', lot: 'Lot 11', date: '2026-10-12',
+    items: [
+      'Nouvel onglet Historique : une fiche par semaine close (tâches terminées, reportées, temps par client).',
+      '« Nouvelle Semaine » enregistre la semaine dès qu’au moins une tâche terminée est archivée.',
+      'Les semaines déjà archivées sont reprises dans l’historique (reports non connus pour celles-ci).',
+    ],
+  },
   {
     version: '1.10.0', type: 'mineure', lot: 'Lot 10', date: '2026-10-12',
     items: [
@@ -98,6 +107,8 @@ let projects = [];
 let clients = [];
 let links = []; // liens d'accès rapide des projets (project_links)
 let comments = []; // commentaires des tâches (task_comments), archivées comprises
+let weeks = []; // semaines closes par « Nouvelle Semaine » (instantanés)
+const openWeeks = new Set(); // fiches de semaine dépliées dans l'historique
 const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
 let showLinks = true;
 try { showLinks = localStorage.getItem(LINKS_KEY) !== 'off'; } catch { /* stockage indisponible */ }
@@ -173,6 +184,7 @@ const db = {
   listClients: () => api('clients', '?select=*&order=name.asc'),
   listLinks: () => api('project_links', '?select=*&order=created_at.asc'),
   listComments: () => api('task_comments', '?select=*&order=created_at.asc'),
+  listWeeks: () => api('weeks', '?select=*&order=closed_at.desc'),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -322,6 +334,7 @@ function render() {
 
   renderWaiting();
   renderArchives();
+  renderHistory();
   renderClients();
   $('#clients-list').innerHTML = clients.map((c) => `<option value="${esc(c.name)}"></option>`).join('');
   $('#projects-list').innerHTML = [...new Set(projects.map((p) => p.name))].map((n) => `<option value="${esc(n)}"></option>`).join('');
@@ -486,7 +499,7 @@ function renderArchives() {
 }
 
 // Navigation par onglets (hash) : une vue #<nom>-view par onglet.
-const ROUTES = ['planning', 'clients', 'archives'];
+const ROUTES = ['planning', 'history', 'clients', 'archives'];
 const currentRoute = () => routeOf(location.hash, ROUTES);
 
 function route() {
@@ -773,17 +786,29 @@ function prefillAdd(project, day) {
 
 // Nouvelle semaine
 // Archive les tâches terminées (sauf `keepIds`, gardées dans le planning) et ramène le reste sur Lundi.
+// La semaine n'est enregistrée (instantané + rattachement des tâches) que si au moins une tâche est archivée.
 function startNewWeek(keepIds = []) {
   const archivedAt = new Date().toISOString();
+  const stats = weekSnapshot(tasks, keepIds);
   const next = newWeek(tasks, history, archivedAt, keepIds);
   const keep = keepIds.length ? `&id=not.in.(${keepIds.join(',')})` : '';
-  const snapshot = { tasks, history };
+  const snapshot = { tasks, history, weeks };
   ({ tasks, history } = next);
   render();
+  let week = null;
   run(
     async () => {
       if (next.finished) {
-        await api('tasks', `?is_completed=eq.true&archived_at=is.null${keep}`, { method: 'PATCH', body: { archived_at: archivedAt } });
+        [week] = await api('weeks', '', { method: 'POST', body: { closed_at: archivedAt, ...stats }, prefer: 'return=representation' });
+        try {
+          await api('tasks', `?is_completed=eq.true&archived_at=is.null${keep}`, { method: 'PATCH', body: { archived_at: archivedAt, week_id: week.id } });
+        } catch (ex) { // tâches non archivées : la semaine enregistrée n'a plus lieu d'être
+          await api('weeks', `?id=eq.${week.id}`, { method: 'DELETE' }).catch(() => {});
+          throw ex;
+        }
+        weeks = [week, ...weeks];
+        history.forEach((t) => { if (t.archived_at === archivedAt) t.week_id = week.id; });
+        render();
       }
       if (next.moving) {
         await api('tasks', '?is_completed=eq.false&archived_at=is.null&day_of_week=not.is.null', { method: 'PATCH', body: { day_of_week: 'Lundi' } });
@@ -793,7 +818,7 @@ function startNewWeek(keepIds = []) {
       }
       if (keepIds.length) toast(`${keepIds.length} tâche${keepIds.length > 1 ? 's' : ''} gardée${keepIds.length > 1 ? 's' : ''} dans le planning`);
     },
-    () => { tasks = snapshot.tasks; history = snapshot.history; }
+    () => { ({ tasks, history, weeks } = snapshot); }
   );
 }
 
@@ -804,7 +829,10 @@ $('#new-week').addEventListener('click', () => {
   weekPending = finishedWithPending(tasks, comments);
   const finished = tasks.filter((t) => t.is_completed).length;
   if (!weekPending.length) {
-    if (confirm(`Nouvelle semaine : archiver ${finished} tâche(s) terminée(s) dans l'historique des projets et ramener les autres sur Lundi ?`)) startNewWeek();
+    const question = finished
+      ? `Nouvelle semaine : archiver ${finished} tâche(s) terminée(s), enregistrer la semaine dans l'historique et ramener les autres sur Lundi ?`
+      : 'Aucune tâche terminée : rien à archiver, aucune semaine ne sera enregistrée. Ramener les tâches planifiées sur Lundi ?';
+    if (confirm(question)) startNewWeek();
     return;
   }
   $('#week-pending').innerHTML = weekPending.map(({ task: t, count }) => `
@@ -1119,6 +1147,95 @@ $('#project-form').addEventListener('submit', (e) => {
   });
 });
 
+// ---------- Historique des semaines ----------
+const fmtDate = (iso, opts) => new Date(iso).toLocaleDateString('fr-FR', opts);
+const LONG_DATE = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
+const SHORT_DATE = { day: 'numeric', month: 'short' };
+const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
+
+function renderHistory() {
+  const list = weekPeriods(weeks);
+  $('#weeks-count').textContent = list.length;
+  $('#weeks-list').innerHTML = list.length
+    ? list.map(weekHTML).join('')
+    : '<p class="text-sm text-slate-400">Aucune semaine enregistrée : « Nouvelle Semaine » en crée une dès qu’une tâche terminée est archivée.</p>';
+}
+
+function weekHTML(w) {
+  const done = weekTasks(history, w);
+  const pending = done.reduce((n, t) => n + pendingCount(comments, t.id), 0);
+  const max = Math.max(...w.by_client.map((c) => +c.hours || 0), 0);
+  const carried = w.carried_count == null
+    ? '<span class="text-slate-400" title="Semaine reprise de l’existant : les reports n’étaient pas encore enregistrés">Reports non connus</span>'
+    : `${plural(w.carried_count, 'reportée')} · ${fmtH(w.carried_hours)}`;
+  // Tâches de la semaine, groupées par client · projet
+  const groups = new Map();
+  done.forEach((t) => {
+    const key = `${t.client_name} · ${t.project_name}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  });
+  return `
+    <details class="group bg-white border border-slate-200 rounded-xl shadow-sm" data-week="${w.id}" ${openWeeks.has(w.id) ? 'open' : ''}>
+      <summary class="flex flex-wrap items-center gap-x-4 gap-y-1 p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm font-semibold first-letter:uppercase">Semaine close le ${esc(fmtDate(w.closed_at, LONG_DATE))}</span>
+          <span class="block text-xs text-slate-500">${w.from ? `Du ${esc(fmtDate(w.from, SHORT_DATE))} au ${esc(fmtDate(w.closed_at, SHORT_DATE))}` : 'Première semaine enregistrée'}</span>
+        </span>
+        <span class="text-xs text-slate-600 tabular-nums">${plural(w.finished_count, 'terminée')} · ${fmtH(w.finished_hours)}</span>
+        <span class="text-xs text-slate-600 tabular-nums">${carried}</span>
+        ${pending ? `<span class="inline-flex items-center gap-1 text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5 tabular-nums"
+          title="${plural(pending, 'commentaire')} non traité${pending > 1 ? 's' : ''}">${BUBBLE}${pending}</span>` : ''}
+        <span class="text-slate-400 transition group-open:rotate-90" aria-hidden="true">›</span>
+      </summary>
+      <div class="border-t border-slate-100 p-4 space-y-4">
+        ${w.by_client.length ? `
+        <div>
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Temps par client</h3>
+          <ul class="space-y-1.5">${w.by_client.map((c) => `
+            <li class="grid grid-cols-[minmax(0,10rem)_1fr_auto] items-center gap-3 text-sm">
+              <span class="truncate">${esc(c.client)}</span>
+              <span class="h-2 rounded-full bg-slate-100 overflow-hidden"><span class="block h-full rounded-full bg-slate-900" style="width:${max ? Math.round((+c.hours / max) * 100) : 0}%"></span></span>
+              <span class="text-xs text-slate-600 tabular-nums">${plural(c.count, 'tâche')} · ${fmtH(c.hours)}</span>
+            </li>`).join('')}
+          </ul>
+        </div>` : ''}
+        <div>
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Tâches terminées</h3>
+          ${done.length ? [...groups].sort((a, b) => a[0].localeCompare(b[0])).map(([key, list]) => `
+            <p class="text-xs font-medium text-slate-500 mt-3 first:mt-0">${esc(key)}</p>
+            <ul class="divide-y divide-slate-100">${list.map((t) => {
+              const cs = taskComments(t.id);
+              return `
+              <li class="py-1.5">
+                <div class="flex items-center gap-2 text-sm">
+                  <span class="min-w-0 flex-1 truncate">${esc(t.task_name)}</span>
+                  <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+                </div>
+                ${cs.length ? `<ul class="mt-1 pl-3 space-y-1">${cs.map(commentHTML).join('')}</ul>` : ''}
+              </li>`;
+            }).join('')}</ul>`).join('')
+          : '<p class="text-sm text-slate-400">Les tâches de cette semaine ont été supprimées.</p>'}
+        </div>
+      </div>
+    </details>`;
+}
+
+// Garde les fiches dépliées d'un rendu à l'autre (l'évènement toggle ne remonte pas : capture).
+$('#history-view').addEventListener('toggle', (e) => {
+  const id = e.target.dataset?.week;
+  if (!id) return;
+  if (e.target.open) openWeeks.add(id); else openWeeks.delete(id);
+}, true);
+$('#history-view').addEventListener('change', (e) => {
+  const id = e.target.dataset.commentToggle;
+  if (id) toggleComment(id, e.target.checked);
+});
+$('#history-view').addEventListener('click', (e) => {
+  const id = e.target.dataset.deleteComment;
+  if (id) deleteComment(id);
+});
+
 // ---------- Clients : liste et fiche (#clients/<id>) ----------
 const initials = (name) => esc(name.trim().slice(0, 2).toUpperCase());
 const logoHTML = (c, size) => c.logo
@@ -1370,12 +1487,15 @@ const TOURS = {
       { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
         title: 'Les archives',
         content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },
+      { id: 'history', targetSelector: '#tab-history', placement: 'bottom', lot: 'Lot 11',
+        title: 'L’historique des semaines',
+        content: 'Chaque « Nouvelle Semaine » enregistre ici la semaine close : tâches terminées et reportées, temps par client, et commentaires restés non traités.' },
       { id: 'clients', targetSelector: '#tab-clients', placement: 'bottom', lot: 'Lot 8',
         title: 'Les clients',
         content: 'Chaque client a sa fiche : logo, site web et projets rattachés. Dans le détail d’un projet, ajoute l’année, le devis et des liens d’accès rapide.' },
       { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
         title: 'Nouvelle semaine',
-        content: 'Les tâches terminées sont archivées dans l’historique de leur projet (le temps passé est conservé) et les autres reviennent sur Lundi.' },
+        content: 'Les tâches terminées sont archivées (le temps passé est conservé), la semaine est enregistrée dans l’onglet Historique et les autres tâches reviennent sur Lundi.' },
       { id: 'changelog', targetSelector: '#open-changelog', placement: 'bottom', lot: 'Lot 5',
         title: 'Journal des mises à jour',
         content: 'Retrouve ici les nouveautés de chaque version, surligne celles d’un lot, et rejoue ce tutoriel quand tu veux.' },
@@ -1519,7 +1639,9 @@ $('#logout').addEventListener('click', () => {
   clients = [];
   links = [];
   comments = [];
+  weeks = [];
   openComments.clear();
+  openWeeks.clear();
   setAuthed(false);
 });
 
@@ -1528,8 +1650,8 @@ async function start() {
   setAuthed(true);
   render();
   await run(async () => {
-    [clients, projects, tasks, history, links, comments] = await Promise.all([
-      db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(),
+    [clients, projects, tasks, history, links, comments, weeks] = await Promise.all([
+      db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(), db.listWeeks(),
     ]);
     render();
   });

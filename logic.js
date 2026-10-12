@@ -72,6 +72,41 @@
     };
   }
 
+  // Instantané enregistré à « Nouvelle Semaine » (avant archivage) : tâches terminées archivées,
+  // tâches planifiées reportées (gardées comprises ; le sas n'est ni l'un ni l'autre), répartition par client.
+  function weekSnapshot(tasks, keepIds = []) {
+    const kept = new Set(keepIds);
+    const finished = tasks.filter((t) => t.is_completed && !kept.has(t.id));
+    const carried = tasks.filter((t) => t.day_of_week && !(t.is_completed && !kept.has(t.id)));
+    const byClient = new Map();
+    finished.forEach((t) => {
+      const name = t.projects?.clients?.name ?? t.client_name ?? '';
+      const row = byClient.get(name) || { client: name, count: 0, hours: 0 };
+      row.count += 1;
+      row.hours += hoursOf(t);
+      byClient.set(name, row);
+    });
+    return {
+      finished_count: finished.length,
+      finished_hours: sumHours(finished),
+      carried_count: carried.length,
+      carried_hours: sumHours(carried),
+      by_client: [...byClient.values()].sort((a, b) => b.hours - a.hours || a.client.localeCompare(b.client)),
+    };
+  }
+
+  // Semaines de la plus récente à la plus ancienne ; `from` = clôture de la semaine précédente (null pour la première).
+  function weekPeriods(weeks) {
+    const asc = [...weeks].sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at));
+    return asc.map((w, i) => ({ ...w, from: i ? asc[i - 1].closed_at : null })).reverse();
+  }
+
+  // Tâches archivées d'une semaine : rattachées par week_id, ou (reprise) par date d'archivage identique.
+  function weekTasks(history, week) {
+    const at = new Date(week.closed_at).getTime();
+    return history.filter((t) => t.week_id === week.id || (!t.week_id && new Date(t.archived_at).getTime() === at));
+  }
+
   // Commentaires de tâche : non traités d'une tâche, d'un projet (toutes ses tâches, archivées comprises).
   const pendingCount = (comments, taskId) => comments.filter((c) => c.task_id === taskId && !c.is_done).length;
 
@@ -218,5 +253,6 @@
 
   return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
-    pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf };
+    pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
+    weekSnapshot, weekPeriods, weekTasks };
 }));
