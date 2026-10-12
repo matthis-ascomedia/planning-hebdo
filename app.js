@@ -1,7 +1,8 @@
 const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
-const DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi'];
+// Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
+const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 const SESSION_KEY = 'planning_session';
@@ -132,8 +133,6 @@ const db = {
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
-const same = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
-
 async function ensureProject(clientName, projectName) {
   const cName = clientName.trim() || DEFAULT_CLIENT;
   const pName = projectName.trim() || DEFAULT_PROJECT;
@@ -256,9 +255,8 @@ function parkedHTML(t) {
 
 // Sas d'attente : projets en cours sans tâche planifiée dans la semaine, ou ayant des tâches rangées dans leur dossier.
 function renderWaiting() {
-  const planned = new Set(tasks.filter((t) => t.day_of_week).map((t) => t.project_id));
-  const parked = (p) => tasks.filter((t) => t.project_id === p.id && !t.day_of_week);
-  const waiting = projects.filter((p) => p.status === 'en_cours' && (!planned.has(p.id) || parked(p).length));
+  const parked = (p) => parkedTasks(tasks, p.id);
+  const waiting = waitingProjects(projects, tasks);
   $('#waiting-count').textContent = waiting.length;
   $('#waiting-list').innerHTML = waiting.length
     ? waiting.map((p) => {
@@ -370,25 +368,7 @@ async function reopenIfArchived(project) {
 const assignDialog = $('#assign-dialog');
 const assignForm = $('#assign-form');
 
-function suggestProjects(client, project) {
-  const c = client.trim().toLowerCase();
-  const p = project.trim().toLowerCase();
-  return projects
-    .map((x) => {
-      const xc = x.clients.name.toLowerCase();
-      const xp = x.name.toLowerCase();
-      const exact = xc === c && xp === p;
-      let score = 0;
-      if (exact) score = 4;
-      else if (xc === c && (xp.includes(p) || p.includes(xp))) score = 3;
-      else if (xp === p) score = 2;
-      else if (xc === c && x.status === 'en_cours') score = 1;
-      return { p: x, exact, score };
-    })
-    .filter((s) => s.score > 0 && (s.exact || s.p.status === 'en_cours'))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
-}
+const suggestProjects = (client, project) => suggestFrom(projects, client, project);
 
 function openAssign(draft) {
   assignForm.dataset.draft = JSON.stringify(draft);
@@ -556,22 +536,18 @@ function prefillAdd(project, day) {
 
 // Nouvelle semaine
 $('#new-week').addEventListener('click', () => {
-  const finished = tasks.filter((t) => t.is_completed);
-  const moving = tasks.filter((t) => !t.is_completed && t.day_of_week && t.day_of_week !== 'Lundi').length;
-  if (!confirm(`Nouvelle semaine : archiver ${finished.length} tâche(s) terminée(s) dans l'historique des projets et ramener les autres sur Lundi ?`)) return;
-  const snapshot = { tasks: tasks.map((t) => ({ ...t })), history: history.slice() };
   const archivedAt = new Date().toISOString();
-  // Les tâches terminées rejoignent l'historique (temps passé conservé) ;
-  // les tâches rangées dans le sas (day_of_week null) restent dans leur dossier.
-  history = finished.map((t) => ({ ...t, archived_at: archivedAt })).concat(history);
-  tasks = tasks.filter((t) => !t.is_completed).map((t) => (t.day_of_week ? { ...t, day_of_week: 'Lundi' } : t));
+  const next = newWeek(tasks, history, archivedAt);
+  if (!confirm(`Nouvelle semaine : archiver ${next.finished} tâche(s) terminée(s) dans l'historique des projets et ramener les autres sur Lundi ?`)) return;
+  const snapshot = { tasks, history };
+  ({ tasks, history } = next);
   render();
   run(
     async () => {
-      if (finished.length) {
+      if (next.finished) {
         await api('tasks', '?is_completed=eq.true&archived_at=is.null', { method: 'PATCH', body: { archived_at: archivedAt } });
       }
-      if (moving) {
+      if (next.moving) {
         await api('tasks', '?is_completed=eq.false&archived_at=is.null&day_of_week=not.is.null', { method: 'PATCH', body: { day_of_week: 'Lundi' } });
       }
     },
@@ -580,23 +556,6 @@ $('#new-week').addEventListener('click', () => {
 });
 
 // Import JSON
-const TASK_FIELDS = ['client_name', 'project_name', 'task_name'];
-
-function normalizeTask(raw, i) {
-  const label = `Élément ${i + 1}`;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${label} : un objet est attendu.`);
-  const row = {};
-  TASK_FIELDS.forEach((k) => { row[k] = String(raw[k] ?? '').trim(); });
-  if (!row.task_name) throw new Error(`${label} : "task_name" est obligatoire.`);
-  const hours = raw.estimated_hours == null || raw.estimated_hours === '' ? 0 : Number(raw.estimated_hours);
-  if (!Number.isFinite(hours) || hours < 0) throw new Error(`${label} : "estimated_hours" doit être un nombre positif.`);
-  row.estimated_hours = hours;
-  row.day_of_week = raw.day_of_week ?? 'Lundi';
-  if (!DAYS.includes(row.day_of_week)) throw new Error(`${label} : "day_of_week" doit être parmi ${DAYS.join(', ')}.`);
-  row.is_completed = raw.is_completed === true;
-  return row;
-}
-
 $('#import-json').addEventListener('click', () => $('#import-file').click());
 
 $('#import-file').addEventListener('change', async (e) => {
@@ -708,12 +667,11 @@ function openProject(id) {
   $('#project-error').classList.add('hidden');
   const current = tasks.filter((t) => t.project_id === id);
   const past = history.filter((t) => t.project_id === id);
-  const sum = (list) => list.reduce((s, t) => s + (+t.estimated_hours || 0), 0);
-  const spent = sum(past) + sum(current.filter((t) => t.is_completed));
+  const time = projectTime(tasks, history, id);
   $('#project-stats').innerHTML = `
-    <div><dt class="text-xs text-slate-500">Tâches</dt><dd class="text-sm font-semibold">${current.length + past.length}</dd></div>
-    <div><dt class="text-xs text-slate-500">Temps prévu</dt><dd class="text-sm font-semibold">${fmtH(sum(current) + sum(past))}</dd></div>
-    <div><dt class="text-xs text-slate-500">Temps passé</dt><dd class="text-sm font-semibold">${fmtH(spent)}</dd></div>`;
+    <div><dt class="text-xs text-slate-500">Tâches</dt><dd class="text-sm font-semibold">${time.count}</dd></div>
+    <div><dt class="text-xs text-slate-500">Temps prévu</dt><dd class="text-sm font-semibold">${fmtH(time.planned)}</dd></div>
+    <div><dt class="text-xs text-slate-500">Temps passé</dt><dd class="text-sm font-semibold">${fmtH(time.spent)}</dd></div>`;
   const row = (t, status) => `
     <li class="flex items-center gap-2 text-sm py-1.5 border-b border-slate-100 last:border-0">
       <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
