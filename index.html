@@ -229,6 +229,28 @@
 
   <style id="lot-highlight"></style>
 
+  <!-- Tutoriel pas-à-pas : fond assombri percé d'un spotlight sur la cible -->
+  <div id="tour" class="hidden fixed inset-0 z-[60]">
+    <div id="tour-spot" class="absolute rounded-lg pointer-events-none transition-all duration-200"
+      style="box-shadow: 0 0 0 9999px rgba(15, 23, 42, .6);"></div>
+    <div id="tour-card" role="dialog" aria-modal="true" aria-labelledby="tour-title" aria-describedby="tour-content"
+      class="absolute w-80 max-w-[calc(100vw-16px)] bg-white rounded-xl shadow-xl p-4 space-y-2">
+      <p id="tour-lot" class="text-[11px] font-medium text-amber-700 empty:hidden"></p>
+      <h2 id="tour-title" class="text-base font-semibold tracking-tight"></h2>
+      <p id="tour-content" class="text-sm text-slate-600"></p>
+      <div class="flex items-center justify-between pt-2">
+        <span id="tour-progress" class="text-xs text-slate-500 tabular-nums"></span>
+        <div class="flex items-center gap-1.5">
+          <button id="tour-skip" class="text-sm text-slate-500 hover:text-slate-900 px-2 py-1.5 transition">Passer</button>
+          <button id="tour-prev"
+            class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white transition">Précédent</button>
+          <button id="tour-next"
+            class="text-sm font-medium px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Suivant</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" role="status" aria-live="polite"
     class="fixed bottom-6 left-1/2 -translate-x-1/2 translate-y-4 opacity-0 pointer-events-none transition-all duration-300 text-sm font-medium text-white bg-slate-900 rounded-lg px-4 py-2.5 shadow-lg max-w-[90vw]"></div>
 

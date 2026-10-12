@@ -14,6 +14,13 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.6.0', type: 'majeure', lot: 'Lot 5', date: '2026-10-12', tour: 'onboarding-v1',
+    items: [
+      'Tutoriel pas-à-pas au premier lancement : ajout de tâche, planning, sas d’attente, archives.',
+      'Le tutoriel peut être rejoué depuis ce journal.',
+    ],
+  },
+  {
     version: '1.5.0', type: 'mineure', lot: 'Lot 4', date: '2026-10-12',
     items: [
       '« Nouvelle Semaine » archive les tâches terminées au lieu de les supprimer.',
@@ -815,6 +822,7 @@ function renderChangelog() {
         <span class="text-xs text-slate-500 ml-auto">${esc(c.lot)}${c.date ? ` · ${esc(c.date)}` : ''}</span>
       </div>
       <ul class="mt-2 text-sm text-slate-700 list-disc pl-5 space-y-1">${c.items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
+      ${c.tour ? `<button class="mt-3 text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition" data-replay="${esc(c.tour)}">Rejouer le tutoriel</button>` : ''}
     </li>`).join('');
   const lots = [...new Set(CHANGELOG.map((c) => c.lot))];
   $('#lot-select').innerHTML = '<option value="">Aucun</option>' + lots.map((l) => `<option>${esc(l)}</option>`).join('');
@@ -830,6 +838,145 @@ changelogDialog.addEventListener('click', (e) => { if (e.target === changelogDia
 $('#lot-select').addEventListener('change', (e) => highlightLot(e.target.value));
 $('#changelog-dot').classList.toggle('hidden', seenVersion() === LATEST);
 renderChangelog();
+
+// ---------- Tutoriel pas-à-pas (skill mdui-onboarding-overlays) ----------
+const TOUR_KEY = 'planning_tour_done';
+const TOURS = {
+  'onboarding-v1': {
+    steps: [
+      { id: 'add', targetSelector: '#add-form', placement: 'bottom', lot: 'Lot 1',
+        title: 'Ajouter une tâche',
+        content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
+      { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
+        title: 'Le planning de la semaine',
+        content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la modifier (✎) ou la supprimer, et coche-la une fois terminée.' },
+      { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 3',
+        title: 'Le sas d’attente',
+        content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, son temps passé et le renommer.' },
+      { id: 'archives', targetSelector: '#toggle-archives', placement: 'bottom', lot: 'Lot 2',
+        title: 'Les archives',
+        content: 'Les projets archivés depuis le sas sont rangés ici. Tu peux les rouvrir à tout moment.' },
+      { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
+        title: 'Nouvelle semaine',
+        content: 'Les tâches terminées sont archivées dans l’historique de leur projet (le temps passé est conservé) et les autres reviennent sur Lundi.' },
+      { id: 'changelog', targetSelector: '#open-changelog', placement: 'bottom', lot: 'Lot 5',
+        title: 'Journal des mises à jour',
+        content: 'Retrouve ici les nouveautés de chaque version, surligne celles d’un lot, et rejoue ce tutoriel quand tu veux.' },
+    ],
+  },
+};
+
+const tourEl = $('#tour');
+const tourSpot = $('#tour-spot');
+const tourCard = $('#tour-card');
+let tour = null; // { id, steps, index, opener }
+
+function tourDone(id) {
+  try { localStorage.setItem(TOUR_KEY, id); } catch { /* stockage indisponible */ }
+}
+
+function tourSeen(id) {
+  try { return localStorage.getItem(TOUR_KEY) === id; } catch { return false; }
+}
+
+function startTour(id, { force = false } = {}) {
+  const def = TOURS[id];
+  if (!def || tour || (!force && tourSeen(id))) return;
+  if (location.hash === '#archives') location.hash = ''; // les cibles sont sur la vue Planning
+  if (changelogDialog.open) changelogDialog.close();
+  tour = { id, steps: def.steps, index: 0, opener: document.activeElement };
+  tourEl.classList.remove('hidden');
+  showTourStep(0, 1);
+}
+
+function endTour() {
+  if (!tour) return;
+  tourDone(tour.id);
+  tourEl.classList.add('hidden');
+  tour.opener?.focus?.();
+  tour = null;
+}
+
+// Affiche l'étape `i` ; `dir` (+1/-1) sert à sauter les cibles absentes ou masquées.
+function showTourStep(i, dir) {
+  while (tour.steps[i]) {
+    const el = document.querySelector(tour.steps[i].targetSelector);
+    if (el && el.getClientRects().length) break;
+    i += dir;
+  }
+  if (!tour.steps[i]) return dir > 0 ? endTour() : showTourStep(0, 1);
+  tour.index = i;
+  const step = tour.steps[i];
+  const last = i === tour.steps.length - 1;
+  $('#tour-lot').textContent = step.lot || '';
+  $('#tour-title').textContent = step.title;
+  $('#tour-content').textContent = step.content;
+  $('#tour-progress').textContent = `Étape ${i + 1} / ${tour.steps.length}`;
+  $('#tour-prev').disabled = i === 0;
+  $('#tour-next').textContent = last ? 'Terminer' : 'Suivant';
+  $('#tour-skip').classList.toggle('hidden', last);
+  document.querySelector(step.targetSelector).scrollIntoView({ block: 'center', behavior: 'instant' });
+  positionTour();
+  $('#tour-next').focus();
+}
+
+// Spotlight sur la cible + carte ancrée avec repli si elle déborde de l'écran.
+function positionTour() {
+  if (!tour) return;
+  const step = tour.steps[tour.index];
+  const el = document.querySelector(step.targetSelector);
+  if (!el) return;
+  const pad = 6;
+  const r = el.getBoundingClientRect();
+  Object.assign(tourSpot.style, {
+    top: `${r.top - pad}px`, left: `${r.left - pad}px`,
+    width: `${r.width + pad * 2}px`, height: `${r.height + pad * 2}px`,
+  });
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const cw = tourCard.offsetWidth;
+  const ch = tourCard.offsetHeight;
+  const gap = 14;
+  const fitsBelow = r.bottom + pad + gap + ch <= vh - 8;
+  const fitsAbove = r.top - pad - gap - ch >= 8;
+  let top;
+  if (step.placement === 'top' && fitsAbove) top = r.top - pad - gap - ch;
+  else if (fitsBelow) top = r.bottom + pad + gap;
+  else if (fitsAbove) top = r.top - pad - gap - ch;
+  else top = Math.max(8, vh - ch - 16); // cible trop grande : carte collée en bas de l'écran
+  const left = Math.min(Math.max(8, r.left), Math.max(8, vw - cw - 8));
+  tourCard.style.top = `${top}px`;
+  tourCard.style.left = `${left}px`;
+}
+
+$('#tour-next').addEventListener('click', () => {
+  if (tour.index === tour.steps.length - 1) endTour();
+  else showTourStep(tour.index + 1, 1);
+});
+$('#tour-prev').addEventListener('click', () => showTourStep(tour.index - 1, -1));
+$('#tour-skip').addEventListener('click', endTour);
+tourEl.addEventListener('click', (e) => { if (!tourCard.contains(e.target)) endTour(); });
+window.addEventListener('resize', positionTour);
+window.addEventListener('scroll', positionTour, { passive: true });
+
+document.addEventListener('keydown', (e) => {
+  if (!tour) return;
+  if (e.key === 'Escape') { e.preventDefault(); endTour(); return; }
+  if (e.key === 'Tab') { // focus piégé dans la carte
+    const items = [...tourCard.querySelectorAll('button:not([disabled]):not(.hidden)')];
+    if (!items.length) return;
+    const first = items[0];
+    const lastItem = items[items.length - 1];
+    if (!tourCard.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); lastItem.focus(); }
+    else if (!e.shiftKey && document.activeElement === lastItem) { e.preventDefault(); first.focus(); }
+  }
+});
+
+$('#changelog-list').addEventListener('click', (e) => {
+  const id = e.target.dataset.replay;
+  if (id) startTour(id, { force: true });
+});
 
 // Connexion / déconnexion
 $('#login-form').addEventListener('submit', async (e) => {
@@ -864,6 +1011,7 @@ async function start() {
     [clients, projects, tasks, history] = await Promise.all([db.listClients(), db.listProjects(), db.list(), db.listHistory()]);
     render();
   });
+  setTimeout(() => startTour('onboarding-v1'), 400); // une seule fois (état mémorisé)
 }
 
 loadSession();
