@@ -14,6 +14,13 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.5.0', type: 'mineure', lot: 'Lot 4', date: '2026-10-12',
+    items: [
+      '« Nouvelle Semaine » archive les tâches terminées au lieu de les supprimer.',
+      'Détail d’un projet : temps prévu, temps passé total et historique des tâches terminées.',
+    ],
+  },
+  {
     version: '1.4.0', type: 'mineure', lot: 'Lot 3', date: '2026-10-12',
     items: [
       'Glisser un projet du sas sur un jour : ses tâches rangées y sont planifiées.',
@@ -41,7 +48,8 @@ const CHANGELOG = [
   { version: '1.0.0', type: 'majeure', lot: 'Lot 0', items: ['Planning hebdomadaire avec glisser-déposer.'] },
 ];
 
-let tasks = [];
+let tasks = []; // tâches actives (planning + sas)
+let history = []; // tâches terminées puis archivées par « Nouvelle Semaine » (temps passé)
 let projects = [];
 let clients = [];
 let session = null;
@@ -106,7 +114,8 @@ async function api(table, query = '', { method = 'GET', body, prefer } = {}, ret
 }
 
 const db = {
-  list: () => api('tasks', `?select=${TASK_SELECT}&order=created_at.asc`),
+  list: () => api('tasks', `?select=${TASK_SELECT}&archived_at=is.null&order=created_at.asc`),
+  listHistory: () => api('tasks', '?select=*&archived_at=not.is.null&order=archived_at.desc'),
   insert: (rows) => api('tasks', `?select=${TASK_SELECT}`, { method: 'POST', body: rows, prefer: 'return=representation' }),
   update: (id, patch) => api('tasks', `?id=eq.${id}`, { method: 'PATCH', body: patch }),
   updateFull: async (id, patch) => (await api('tasks', `?id=eq.${id}&select=${TASK_SELECT}`, { method: 'PATCH', body: patch, prefer: 'return=representation' }))[0],
@@ -281,7 +290,7 @@ function renderArchives() {
           <h3 class="text-sm font-semibold mb-2">${esc(client)}</h3>
           <ul class="flex flex-col gap-2">
             ${list.map((p) => {
-              const n = tasks.filter((t) => t.project_id === p.id).length;
+              const n = tasks.concat(history).filter((t) => t.project_id === p.id).length;
               return `
               <li class="flex items-center gap-3 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
                 <span class="min-w-0 flex-1 text-sm font-medium truncate">${esc(p.name)}</span>
@@ -540,19 +549,26 @@ function prefillAdd(project, day) {
 
 // Nouvelle semaine
 $('#new-week').addEventListener('click', () => {
-  const done = tasks.filter((t) => t.is_completed).length;
+  const finished = tasks.filter((t) => t.is_completed);
   const moving = tasks.filter((t) => !t.is_completed && t.day_of_week && t.day_of_week !== 'Lundi').length;
-  if (!confirm(`Nouvelle semaine : supprimer ${done} tâche(s) terminée(s) et ramener les autres sur Lundi ?`)) return;
-  const snapshot = tasks.map((t) => ({ ...t }));
-  // Les tâches rangées dans le sas (day_of_week null) restent dans leur dossier.
+  if (!confirm(`Nouvelle semaine : archiver ${finished.length} tâche(s) terminée(s) dans l'historique des projets et ramener les autres sur Lundi ?`)) return;
+  const snapshot = { tasks: tasks.map((t) => ({ ...t })), history: history.slice() };
+  const archivedAt = new Date().toISOString();
+  // Les tâches terminées rejoignent l'historique (temps passé conservé) ;
+  // les tâches rangées dans le sas (day_of_week null) restent dans leur dossier.
+  history = finished.map((t) => ({ ...t, archived_at: archivedAt })).concat(history);
   tasks = tasks.filter((t) => !t.is_completed).map((t) => (t.day_of_week ? { ...t, day_of_week: 'Lundi' } : t));
   render();
   run(
     async () => {
-      if (done) await api('tasks', '?is_completed=eq.true', { method: 'DELETE' });
-      if (moving) await api('tasks', '?is_completed=eq.false&day_of_week=not.is.null', { method: 'PATCH', body: { day_of_week: 'Lundi' } });
+      if (finished.length) {
+        await api('tasks', '?is_completed=eq.true&archived_at=is.null', { method: 'PATCH', body: { archived_at: archivedAt } });
+      }
+      if (moving) {
+        await api('tasks', '?is_completed=eq.false&archived_at=is.null&day_of_week=not.is.null', { method: 'PATCH', body: { day_of_week: 'Lundi' } });
+      }
     },
-    () => { tasks = snapshot; }
+    () => { tasks = snapshot.tasks; history = snapshot.history; }
   );
 });
 
@@ -683,20 +699,27 @@ function openProject(id) {
   projectEditForm.project_name.value = p.name;
   $('#project-client').textContent = p.clients.name;
   $('#project-error').classList.add('hidden');
-  const list = tasks.filter((t) => t.project_id === id);
-  const total = list.reduce((s, t) => s + (+t.estimated_hours || 0), 0);
-  const done = list.filter((t) => t.is_completed).reduce((s, t) => s + (+t.estimated_hours || 0), 0);
+  const current = tasks.filter((t) => t.project_id === id);
+  const past = history.filter((t) => t.project_id === id);
+  const sum = (list) => list.reduce((s, t) => s + (+t.estimated_hours || 0), 0);
+  const spent = sum(past) + sum(current.filter((t) => t.is_completed));
   $('#project-stats').innerHTML = `
-    <div><dt class="text-xs text-slate-500">Tâches</dt><dd class="text-sm font-semibold">${list.length}</dd></div>
-    <div><dt class="text-xs text-slate-500">Temps total</dt><dd class="text-sm font-semibold">${fmtH(total)}</dd></div>
-    <div><dt class="text-xs text-slate-500">Terminé</dt><dd class="text-sm font-semibold">${fmtH(done)}</dd></div>`;
-  $('#project-tasks').innerHTML = list.length
-    ? list.map((t) => `
-        <li class="flex items-center gap-2 text-sm py-1.5 border-b border-slate-100 last:border-0">
-          <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
-          <span class="text-xs text-slate-500">${t.is_completed ? 'Terminée' : esc(t.day_of_week || 'Sas')}</span>
-          <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
-        </li>`).join('')
+    <div><dt class="text-xs text-slate-500">Tâches</dt><dd class="text-sm font-semibold">${current.length + past.length}</dd></div>
+    <div><dt class="text-xs text-slate-500">Temps prévu</dt><dd class="text-sm font-semibold">${fmtH(sum(current) + sum(past))}</dd></div>
+    <div><dt class="text-xs text-slate-500">Temps passé</dt><dd class="text-sm font-semibold">${fmtH(spent)}</dd></div>`;
+  const row = (t, status) => `
+    <li class="flex items-center gap-2 text-sm py-1.5 border-b border-slate-100 last:border-0">
+      <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
+      <span class="text-xs text-slate-500">${esc(status)}</span>
+      <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+    </li>`;
+  const date = (t) => new Date(t.archived_at).toLocaleDateString('fr-FR');
+  $('#project-tasks').innerHTML = (current.length || past.length)
+    ? current.map((t) => row(t, t.is_completed ? 'Terminée' : t.day_of_week || 'Sas')).join('')
+      + (past.length
+        ? `<li class="pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500" data-lot="Lot 4">Historique</li>`
+          + past.map((t) => row(t, `Terminée · ${date(t)}`)).join('')
+        : '')
     : '<li class="text-sm text-slate-400 py-1">Aucune tâche rattachée.</li>';
   projectDialog.showModal();
 }
@@ -827,6 +850,7 @@ $('#login-form').addEventListener('submit', async (e) => {
 $('#logout').addEventListener('click', () => {
   saveSession(null);
   tasks = [];
+  history = [];
   projects = [];
   clients = [];
   setAuthed(false);
@@ -837,7 +861,7 @@ async function start() {
   setAuthed(true);
   render();
   await run(async () => {
-    [clients, projects, tasks] = await Promise.all([db.listClients(), db.listProjects(), db.list()]);
+    [clients, projects, tasks, history] = await Promise.all([db.listClients(), db.listProjects(), db.list(), db.listHistory()]);
     render();
   });
 }
