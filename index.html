@@ -14,8 +14,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <style>
     body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
-    .card.dragging { opacity: .4; }
-    .col.drag-over { background: #f1f5f9; outline: 2px dashed #cbd5e1; outline-offset: -2px; }
+    .card.dragging, .folder.dragging { opacity: .4; }
+    .col.drag-over, #waiting.drag-over { background: #f1f5f9; outline: 2px dashed #94a3b8; outline-offset: -2px; }
     input[type="checkbox"].chk {
       appearance: none; width: 16px; height: 16px; border: 1.5px solid #cbd5e1; border-radius: 5px;
       cursor: pointer; flex-shrink: 0; transition: all .15s; background: #fff; position: relative;
@@ -63,16 +63,28 @@
           class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
           Nouvelle Semaine
         </button>
+        <button id="toggle-archives" data-lot="Lot 2"
+          class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
+          Archives
+        </button>
+        <button id="open-changelog"
+          class="relative text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
+          Nouveautés
+          <span id="changelog-dot" class="hidden absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-500" aria-label="Nouvelles mises à jour"></span>
+        </button>
         <button id="logout" class="text-sm text-slate-500 hover:text-slate-900 px-2 py-2 transition">Déconnexion</button>
       </div>
     </header>
 
+    <div id="planning-view">
     <form id="add-form"
       class="grid grid-cols-2 md:grid-cols-12 gap-2 bg-white border border-slate-200 rounded-xl p-2.5 mb-6 shadow-sm">
-      <input name="client_name" required placeholder="Client" autocomplete="off"
+      <input name="client_name" required placeholder="Client" autocomplete="off" list="clients-list"
         class="col-span-1 md:col-span-2 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
-      <input name="project_name" required placeholder="Projet" autocomplete="off"
+      <input name="project_name" required placeholder="Projet" autocomplete="off" list="projects-list"
         class="col-span-1 md:col-span-2 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+      <datalist id="clients-list"></datalist>
+      <datalist id="projects-list"></datalist>
       <input name="task_name" required placeholder="Nom de la tâche" autocomplete="off"
         class="col-span-2 md:col-span-3 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
       <input name="estimated_hours" type="number" min="0" step="0.25" required placeholder="Heures"
@@ -80,6 +92,7 @@
       <select name="day_of_week"
         class="col-span-1 md:col-span-2 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none">
         <option>Lundi</option><option>Mardi</option><option>Mercredi</option><option>Jeudi</option><option>Vendredi</option>
+        <option value="">Sas d’attente</option>
       </select>
       <button type="submit"
         class="col-span-2 md:col-span-2 px-3 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 active:scale-[.98] transition">
@@ -90,7 +103,131 @@
     <div id="error" class="hidden mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
 
     <main id="board" class="grid grid-cols-1 md:grid-cols-5 gap-3"></main>
+
+    <!-- Sas d'attente : projets en cours sans tâche cette semaine -->
+    <section id="waiting" data-lot="Lot 1" aria-labelledby="waiting-title"
+      class="mt-6 rounded-xl border border-dashed border-slate-300 bg-slate-100/40 p-3">
+      <div class="flex flex-wrap items-center justify-between gap-3 px-1 pb-3">
+        <h2 id="waiting-title" class="text-sm font-semibold">
+          Sas d’attente <span id="waiting-count" class="ml-1 text-xs font-medium text-slate-500 tabular-nums">0</span>
+        </h2>
+        <form id="project-form" class="flex items-center gap-2">
+          <input name="client_name" required placeholder="Client" autocomplete="off" list="clients-list" aria-label="Client"
+            class="w-32 px-2.5 py-1.5 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" />
+          <input name="project_name" required placeholder="Nouveau projet" autocomplete="off" aria-label="Projet"
+            class="w-40 px-2.5 py-1.5 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" />
+          <button type="submit"
+            class="px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">+ Projet</button>
+        </form>
+      </div>
+      <ul id="waiting-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 items-start"></ul>
+    </section>
+    </div>
+
+    <!-- Page Archives : projets terminés -->
+    <div id="archives-view" class="hidden" data-lot="Lot 2">
+      <h2 class="text-lg font-semibold tracking-tight mb-4">
+        Archives <span id="archives-count" class="ml-1 text-sm font-medium text-slate-500 tabular-nums">0</span>
+      </h2>
+      <div id="archives-list" class="space-y-5 max-w-2xl"></div>
+    </div>
   </div>
+
+  <!-- Édition d'une tâche -->
+  <dialog id="edit-dialog" aria-labelledby="edit-title"
+    class="m-auto w-[92vw] max-w-md rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <form id="edit-form" class="p-5 space-y-3">
+      <h2 id="edit-title" class="text-base font-semibold tracking-tight">Modifier la tâche</h2>
+      <div class="grid grid-cols-2 gap-2">
+        <input name="client_name" required placeholder="Client" autocomplete="off" list="clients-list" aria-label="Client"
+          class="px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+        <input name="project_name" required placeholder="Projet" autocomplete="off" list="projects-list" aria-label="Projet"
+          class="px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+      </div>
+      <input name="task_name" required placeholder="Nom de la tâche" autocomplete="off" aria-label="Nom de la tâche"
+        class="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+      <div class="grid grid-cols-2 gap-2">
+        <input name="estimated_hours" type="number" min="0" step="0.25" required placeholder="Heures" aria-label="Heures"
+          class="px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+        <select name="day_of_week" aria-label="Jour"
+          class="px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none">
+          <option>Lundi</option><option>Mardi</option><option>Mercredi</option><option>Jeudi</option><option>Vendredi</option>
+          <option value="">Sas d’attente</option>
+        </select>
+      </div>
+      <p id="edit-error" class="hidden text-sm text-red-700"></p>
+      <div class="flex justify-end gap-2 pt-1">
+        <button type="button" id="edit-cancel"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+        <button type="submit"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Détail d'un projet (clic sur un dossier du sas) -->
+  <dialog id="project-dialog" aria-labelledby="project-title" data-lot="Lot 3"
+    class="m-auto w-[92vw] max-w-md rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <div class="p-5 space-y-4">
+      <div>
+        <h2 id="project-title" class="text-base font-semibold tracking-tight">Détail du projet</h2>
+        <p class="text-sm text-slate-500">Client : <span id="project-client"></span></p>
+      </div>
+      <form id="project-edit-form" class="flex gap-2">
+        <input name="project_name" required autocomplete="off" aria-label="Nom du projet"
+          class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+        <button type="submit"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Renommer</button>
+      </form>
+      <p id="project-error" class="hidden text-sm text-red-700"></p>
+      <dl id="project-stats" class="grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-3"></dl>
+      <ul id="project-tasks" class="max-h-64 overflow-y-auto"></ul>
+      <div class="flex justify-between gap-2 pt-1">
+        <button type="button" id="project-plan"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Ajouter une tâche</button>
+        <button type="button" id="project-close"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Fermer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Affectation d'une tâche ajoutée dans le sas -->
+  <dialog id="assign-dialog" aria-labelledby="assign-title" data-lot="Lot 3"
+    class="m-auto w-[92vw] max-w-md rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <form id="assign-form" class="p-5 space-y-3">
+      <div>
+        <h2 id="assign-title" class="text-base font-semibold tracking-tight">Dans quel projet ranger la tâche ?</h2>
+        <p class="text-sm text-slate-500 truncate">« <span id="assign-task"></span> »</p>
+      </div>
+      <div id="assign-options" class="space-y-2"></div>
+      <p id="assign-error" class="hidden text-sm text-red-700"></p>
+      <div class="flex justify-end gap-2 pt-1">
+        <button type="button" id="assign-cancel"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+        <button type="submit"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Ranger la tâche</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Journal des mises à jour (tiroir) + suivi par lot -->
+  <dialog id="changelog" aria-labelledby="changelog-title"
+    class="m-0 ml-auto h-full max-h-none w-full max-w-md rounded-none p-0 shadow-xl backdrop:bg-slate-900/40">
+    <div class="p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 id="changelog-title" class="text-base font-semibold tracking-tight">Journal des mises à jour</h2>
+        <button id="close-changelog" class="text-slate-400 hover:text-slate-900 text-xl leading-none" aria-label="Fermer">×</button>
+      </div>
+      <label class="flex items-center gap-2 text-sm text-slate-600">
+        Surligner les nouveautés du lot
+        <select id="lot-select"
+          class="px-2.5 py-1.5 text-sm rounded-lg bg-slate-50 border border-slate-200 focus:outline-none"></select>
+      </label>
+      <ul id="changelog-list" class="space-y-3"></ul>
+    </div>
+  </dialog>
+
+  <style id="lot-highlight"></style>
 
   <div id="toast" role="status" aria-live="polite"
     class="fixed bottom-6 left-1/2 -translate-x-1/2 translate-y-4 opacity-0 pointer-events-none transition-all duration-300 text-sm font-medium text-white bg-slate-900 rounded-lg px-4 py-2.5 shadow-lg max-w-[90vw]"></div>
