@@ -3,6 +3,7 @@
   "private": true,
   "description": "Planning hebdomadaire (site statique, Supabase)",
   "scripts": {
-    "test": "node --test \"tests/*.test.js\""
+    "test": "node --test \"tests/*.test.js\"",
+    "stamp": "node scripts/stamp.js"
   }
 }

@@ -2,7 +2,7 @@ const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
-const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask } = PlanningLogic;
+const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, buildLabel } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 const SESSION_KEY = 'planning_session';
@@ -14,6 +14,15 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.7.0', type: 'mineure', lot: 'Lot 7', date: '2026-10-12',
+    items: [
+      'Nouvelle organisation : planning et ajout de tâche à gauche (2/3), sas d’attente à droite (1/3).',
+      'Barre d’onglets pour naviguer entre le planning et les archives.',
+      'Icône d’onglet personnalisée.',
+      'Numéro de version et identifiant de commit affichés en bas de page.',
+    ],
+  },
   {
     version: '1.6.0', type: 'majeure', lot: 'Lot 5', date: '2026-10-12', tour: 'onboarding-v1',
     items: [
@@ -309,12 +318,18 @@ function renderArchives() {
     : '<p class="text-sm text-slate-400">Aucun projet archivé pour le moment.</p>';
 }
 
-// Navigation Planning / Archives (hash)
+// Navigation par onglets (hash) : une vue #<nom>-view par onglet.
+const ROUTES = ['planning', 'archives'];
+const currentRoute = () => routeOf(location.hash, ROUTES);
+
 function route() {
-  const archives = location.hash === '#archives';
-  $('#planning-view').classList.toggle('hidden', archives);
-  $('#archives-view').classList.toggle('hidden', !archives);
-  $('#toggle-archives').textContent = archives ? '← Planning' : 'Archives';
+  const active = currentRoute();
+  ROUTES.forEach((name) => {
+    $(`#${name}-view`).classList.toggle('hidden', name !== active);
+    const tab = $(`#tab-${name}`);
+    if (name === active) tab.setAttribute('aria-current', 'page');
+    else tab.removeAttribute('aria-current');
+  });
 }
 window.addEventListener('hashchange', route);
 
@@ -740,10 +755,6 @@ $('#archives-view').addEventListener('click', (e) => {
   run(() => api('projects', `?id=eq.${id}`, { method: 'PATCH', body: { status: 'en_cours' } }), () => { p.status = prev; });
 });
 
-$('#toggle-archives').addEventListener('click', () => {
-  location.hash = location.hash === '#archives' ? '' : '#archives';
-});
-
 $('#project-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
@@ -761,6 +772,7 @@ $('#project-form').addEventListener('submit', (e) => {
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
 const LATEST = CHANGELOG[0].version;
+$('#build-info').textContent = buildLabel(LATEST, window.BUILD?.commit);
 const TYPE_LABEL = { majeure: 'Majeure', mineure: 'Mineure', patch: 'Patch' };
 
 function seenVersion() {
@@ -811,9 +823,9 @@ const TOURS = {
       { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 3',
         title: 'Le sas d’attente',
         content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, son temps passé et le renommer.' },
-      { id: 'archives', targetSelector: '#toggle-archives', placement: 'bottom', lot: 'Lot 2',
+      { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
         title: 'Les archives',
-        content: 'Les projets archivés depuis le sas sont rangés ici. Tu peux les rouvrir à tout moment.' },
+        content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },
       { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
         title: 'Nouvelle semaine',
         content: 'Les tâches terminées sont archivées dans l’historique de leur projet (le temps passé est conservé) et les autres reviennent sur Lundi.' },
@@ -840,7 +852,7 @@ function tourSeen(id) {
 function startTour(id, { force = false } = {}) {
   const def = TOURS[id];
   if (!def || tour || (!force && tourSeen(id))) return;
-  if (location.hash === '#archives') location.hash = ''; // les cibles sont sur la vue Planning
+  if (currentRoute() !== 'planning') { location.hash = '#planning'; route(); } // les cibles sont sur la vue Planning
   if (changelogDialog.open) changelogDialog.close();
   tour = { id, steps: def.steps, index: 0, opener: document.activeElement };
   tourEl.classList.remove('hidden');

@@ -84,5 +84,14 @@
     return row;
   }
 
-  return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask };
+  // Onglet affiché pour un hash d'URL : « planning » par défaut (hash vide ou inconnu).
+  function routeOf(hash, routes) {
+    const name = String(hash || '').replace(/^#/, '');
+    return routes.includes(name) ? name : 'planning';
+  }
+
+  // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
+  const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
+
+  return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, buildLabel };
 }));

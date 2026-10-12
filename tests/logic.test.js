@@ -188,3 +188,30 @@ describe('normalizeTask (import JSON)', () => {
     assert.equal(L.normalizeTask({ task_name: 'x', is_completed: true }, 0).is_completed, true);
   });
 });
+
+describe('routeOf', () => {
+  const routes = ['planning', 'archives'];
+
+  test('le hash vide ou inconnu mène au planning', () => {
+    assert.equal(L.routeOf('', routes), 'planning');
+    assert.equal(L.routeOf('#', routes), 'planning');
+    assert.equal(L.routeOf('#nimporte-quoi', routes), 'planning');
+  });
+
+  test('reconnaît un onglet existant, avec ou sans #', () => {
+    assert.equal(L.routeOf('#archives', routes), 'archives');
+    assert.equal(L.routeOf('archives', routes), 'archives');
+    assert.equal(L.routeOf('#planning', routes), 'planning');
+  });
+});
+
+describe('buildLabel', () => {
+  test('version et commit', () => {
+    assert.equal(L.buildLabel('1.7.0', 'a1b2c3d'), 'v1.7.0 · a1b2c3d');
+  });
+
+  test('sans commit connu, seule la version est affichée', () => {
+    assert.equal(L.buildLabel('1.7.0', ''), 'v1.7.0');
+    assert.equal(L.buildLabel('1.7.0', undefined), 'v1.7.0');
+  });
+});

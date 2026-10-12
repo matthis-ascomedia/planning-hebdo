@@ -1,0 +1,3 @@
+#!/bin/sh
+# Met à jour version.js (identifiant du commit affiché dans l'application) avant chaque commit.
+node scripts/stamp.js && git add version.js
