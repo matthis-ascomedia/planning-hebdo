@@ -56,16 +56,51 @@
   }
 
   // « Nouvelle Semaine » : terminées -> historique ; les autres planifiées reviennent sur Lundi ;
-  // les tâches du sas (sans jour) restent rangées. Ne modifie pas les tableaux reçus.
-  function newWeek(tasks, history, archivedAt) {
-    const finished = tasks.filter((t) => t.is_completed);
-    const moving = tasks.filter((t) => !t.is_completed && t.day_of_week && t.day_of_week !== 'Lundi').length;
+  // les tâches du sas (sans jour) restent rangées. `keepIds` : tâches terminées gardées dans le
+  // planning (commentaires non traités), traitées comme des tâches reportées. Ne modifie pas les tableaux reçus.
+  function newWeek(tasks, history, archivedAt, keepIds = []) {
+    const kept = new Set(keepIds);
+    const archived = (t) => t.is_completed && !kept.has(t.id);
+    const finished = tasks.filter(archived);
+    const staying = tasks.filter((t) => !archived(t));
+    const moving = staying.filter((t) => t.day_of_week && t.day_of_week !== 'Lundi').length;
     return {
       finished: finished.length,
       moving,
       history: finished.map((t) => ({ ...t, archived_at: archivedAt })).concat(history),
-      tasks: tasks.filter((t) => !t.is_completed).map((t) => (t.day_of_week ? { ...t, day_of_week: 'Lundi' } : t)),
+      tasks: staying.map((t) => (t.day_of_week ? { ...t, day_of_week: 'Lundi' } : t)),
     };
+  }
+
+  // Commentaires de tâche : non traités d'une tâche, d'un projet (toutes ses tâches, archivées comprises).
+  const pendingCount = (comments, taskId) => comments.filter((c) => c.task_id === taskId && !c.is_done).length;
+
+  function pendingByProject(comments, tasks, projectId) {
+    const ids = new Set(tasks.filter((t) => t.project_id === projectId).map((t) => t.id));
+    return comments.filter((c) => ids.has(c.task_id) && !c.is_done).length;
+  }
+
+  // Tâches terminées qui vont être archivées alors qu'elles ont des commentaires non traités.
+  const finishedWithPending = (tasks, comments) => tasks
+    .filter((t) => t.is_completed)
+    .map((t) => ({ task: t, count: pendingCount(comments, t.id) }))
+    .filter((x) => x.count > 0);
+
+  const COMMENT_MAX = 2000;
+  function parseComment(raw) {
+    const text = String(raw ?? '').trim();
+    if (!text) throw new Error('Le commentaire est vide.');
+    if (text.length > COMMENT_MAX) throw new Error(`Commentaire trop long (${COMMENT_MAX} caractères maximum).`);
+    return text;
+  }
+
+  // Liens d'accès rapide d'un projet : le devis en tête, puis les liens dans l'ordre de création.
+  function linksOf(project, links) {
+    if (!project) return [];
+    const own = links.filter((l) => l.project_id === project.id).map((l) => ({ ...l, quote: false }));
+    return project.quote_url
+      ? [{ label: project.quote_label || 'Devis', url: project.quote_url, quote: true }, ...own]
+      : own;
   }
 
   // Validation d'un élément du fichier d'import JSON.
@@ -182,5 +217,6 @@
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
   return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
-    normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects };
+    normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
+    pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf };
 }));

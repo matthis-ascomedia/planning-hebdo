@@ -378,3 +378,77 @@ describe('groupByClient', () => {
     assert.deepEqual(L.groupByClient([]), []);
   });
 });
+
+describe('newWeek (tâches gardées)', () => {
+  const at = '2026-10-12T08:00:00.000Z';
+
+  test('une tâche terminée gardée reste dans le planning, ramenée sur Lundi', () => {
+    const kept = task({ id: 'k', is_completed: true, day_of_week: 'Jeudi' });
+    const gone = task({ id: 'g', is_completed: true, day_of_week: 'Mardi' });
+    const res = L.newWeek([kept, gone], [], at, ['k']);
+    assert.equal(res.finished, 1);
+    assert.deepEqual(res.history.map((t) => t.id), ['g']);
+    assert.deepEqual(res.tasks.map((t) => [t.id, t.day_of_week, t.is_completed]), [['k', 'Lundi', true]]);
+    assert.equal(res.moving, 1);
+  });
+
+  test('sans liste, comportement inchangé', () => {
+    const res = L.newWeek([task({ id: 'd', is_completed: true })], [], at);
+    assert.equal(res.finished, 1);
+    assert.deepEqual(res.tasks, []);
+  });
+});
+
+describe('commentaires', () => {
+  const comments = [
+    { id: 'm1', task_id: 'a', body: 'x', is_done: false },
+    { id: 'm2', task_id: 'a', body: 'y', is_done: true },
+    { id: 'm3', task_id: 'a', body: 'z', is_done: false },
+    { id: 'm4', task_id: 'b', body: 'w', is_done: false },
+  ];
+
+  test('pendingCount : commentaires non traités d’une tâche', () => {
+    assert.equal(L.pendingCount(comments, 'a'), 2);
+    assert.equal(L.pendingCount(comments, 'b'), 1);
+    assert.equal(L.pendingCount(comments, 'zz'), 0);
+  });
+
+  test('pendingByProject : toutes les tâches du projet, archivées comprises', () => {
+    const list = [task({ id: 'a', project_id: 'p1' }), task({ id: 'b', project_id: 'p2' }), task({ id: 'c', project_id: 'p1' })];
+    assert.equal(L.pendingByProject(comments, list, 'p1'), 2);
+    assert.equal(L.pendingByProject(comments, list, 'p2'), 1);
+  });
+
+  test('finishedWithPending : tâches terminées ayant des commentaires non traités', () => {
+    const list = [
+      task({ id: 'a', is_completed: true }),
+      task({ id: 'b', is_completed: false }),
+      task({ id: 'c', is_completed: true }),
+    ];
+    assert.deepEqual(L.finishedWithPending(list, comments).map((x) => [x.task.id, x.count]), [['a', 2]]);
+  });
+
+  test('parseComment : texte nettoyé, vide refusé, longueur bornée', () => {
+    assert.equal(L.parseComment('  À relire  '), 'À relire');
+    assert.throws(() => L.parseComment('   '), /vide/);
+    assert.throws(() => L.parseComment('x'.repeat(2001)), /trop long/);
+  });
+});
+
+describe('linksOf', () => {
+  test('devis en tête, puis les liens du projet dans l’ordre', () => {
+    const p = { id: 'p1', quote_label: 'Devis D-12', quote_url: 'https://d.fr' };
+    const links = [
+      { id: 'l1', project_id: 'p1', label: 'Figma', url: 'https://figma.com' },
+      { id: 'l2', project_id: 'p2', label: 'Autre', url: 'https://x.fr' },
+      { id: 'l3', project_id: 'p1', label: 'Drive', url: 'https://drive.fr' },
+    ];
+    assert.deepEqual(L.linksOf(p, links).map((l) => [l.label, !!l.quote]), [['Devis D-12', true], ['Figma', false], ['Drive', false]]);
+  });
+
+  test('devis sans libellé : « Devis » ; pas de devis : seulement les liens', () => {
+    assert.equal(L.linksOf({ id: 'p', quote_url: 'https://d.fr' }, [])[0].label, 'Devis');
+    assert.deepEqual(L.linksOf({ id: 'p' }, []), []);
+    assert.deepEqual(L.linksOf(null, []), []);
+  });
+});

@@ -4,12 +4,14 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
-  searchEntities, filterProjects, groupByClient } = PlanningLogic;
+  searchEntities, filterProjects, groupByClient,
+  pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 const SESSION_KEY = 'planning_session';
 const SEEN_KEY = 'planning_changelog_seen';
 const SAS_VIEW_KEY = 'planning_sas_view';
+const LINKS_KEY = 'planning_show_links';
 const DEFAULT_CLIENT = 'Sans client';
 const DEFAULT_PROJECT = 'Sans projet';
 const TASK_SELECT = '*,projects(id,name,status,clients(id,name))';
@@ -17,6 +19,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.10.0', type: 'mineure', lot: 'Lot 10', date: '2026-10-12',
+    items: [
+      'Commentaires sur chaque carte : saisie directe, à cocher une fois traités, compteur des non traités.',
+      'Liens du projet (devis compris) affichés sur les cartes ; bouton « Liens » pour les masquer.',
+      '« Nouvelle Semaine » prévient quand des tâches terminées ont des commentaires non traités.',
+    ],
+  },
   {
     version: '1.9.0', type: 'mineure', lot: 'Lot 9', date: '2026-10-12',
     items: [
@@ -87,6 +97,10 @@ let history = []; // tâches terminées puis archivées par « Nouvelle Semaine 
 let projects = [];
 let clients = [];
 let links = []; // liens d'accès rapide des projets (project_links)
+let comments = []; // commentaires des tâches (task_comments), archivées comprises
+const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
+let showLinks = true;
+try { showLinks = localStorage.getItem(LINKS_KEY) !== 'off'; } catch { /* stockage indisponible */ }
 let session = null;
 
 // ---------- Authentification (Supabase Auth, RLS) ----------
@@ -158,6 +172,7 @@ const db = {
   listProjects: () => api('projects', `?select=${PROJECT_SELECT}&order=created_at.asc`),
   listClients: () => api('clients', '?select=*&order=name.asc'),
   listLinks: () => api('project_links', '?select=*&order=created_at.asc'),
+  listComments: () => api('task_comments', '?select=*&order=created_at.asc'),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -237,10 +252,53 @@ function cardHTML(t) {
         <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 text-base leading-none transition"
                 data-delete="${t.id}" title="Supprimer" aria-label="Supprimer">×</button>
       </div>
-      <div class="mt-2 pl-[26px]">
+      <div class="mt-2 pl-[26px] flex flex-wrap items-center gap-1.5">
         <span class="inline-block text-[11px] font-medium text-slate-600 bg-slate-100 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
+        ${commentBadgeHTML(t)}
       </div>
+      ${showLinks ? cardLinksHTML(t) : ''}
+      ${openComments.has(t.id) ? `<ul class="mt-2 pl-[26px] space-y-1" data-lot="Lot 10">${taskComments(t.id).map(commentHTML).join('')}</ul>` : ''}
+      <form class="mt-2 pl-[26px]" data-comment-form="${t.id}" data-lot="Lot 10">
+        <input name="body" autocomplete="off" maxlength="2000" placeholder="Commenter…" aria-label="Ajouter un commentaire à « ${esc(t.task_name)} »"
+          class="w-full px-2 py-1 text-xs rounded-md bg-slate-50 border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-slate-300 focus:outline-none" />
+      </form>
     </article>`;
+}
+
+const taskComments = (taskId) => comments.filter((c) => c.task_id === taskId);
+
+const BUBBLE = '<svg viewBox="0 0 16 16" aria-hidden="true" class="w-3 h-3 fill-current"><path d="M3 2h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7l-3.5 3v-3H3a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/></svg>';
+
+// Compteur en direct : nombre de commentaires non traités (ambre), sinon total traité (gris).
+function commentBadgeHTML(t) {
+  const all = taskComments(t.id).length;
+  if (!all) return '';
+  const pending = pendingCount(comments, t.id);
+  const cls = pending ? 'bg-amber-100 text-amber-800 hover:bg-amber-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200';
+  const label = pending ? `${pending} commentaire${pending > 1 ? 's' : ''} non traité${pending > 1 ? 's' : ''}` : `${all} commentaire${all > 1 ? 's' : ''} traité${all > 1 ? 's' : ''}`;
+  return `<button type="button" data-comments="${t.id}" aria-expanded="${openComments.has(t.id)}" title="${label}" aria-label="${label}"
+    class="inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 tabular-nums transition ${cls}">${BUBBLE}${pending || all}</button>`;
+}
+
+function commentHTML(c) {
+  return `
+    <li class="group/c flex items-start gap-1.5 text-xs">
+      <input type="checkbox" class="chk mt-px" ${c.is_done ? 'checked' : ''} data-comment-toggle="${c.id}" aria-label="Commentaire traité" />
+      <span class="min-w-0 flex-1 break-words whitespace-pre-line ${c.is_done ? 'line-through text-slate-400' : 'text-slate-700'}">${esc(c.body)}</span>
+      <button type="button" class="opacity-0 group-hover/c:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 leading-none transition"
+              data-delete-comment="${c.id}" title="Supprimer le commentaire" aria-label="Supprimer le commentaire">×</button>
+    </li>`;
+}
+
+// Liens du projet (devis en tête) sous forme de pastilles cliquables.
+function cardLinksHTML(t) {
+  const list = linksOf(projects.find((p) => p.id === t.project_id), links);
+  if (!list.length) return '';
+  return `<div class="mt-1.5 pl-[26px] flex flex-wrap gap-1" data-lot="Lot 10">${list.map((l) => `
+    <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="${esc(l.url)}"
+       class="max-w-full truncate text-[11px] font-medium rounded px-1.5 py-0.5 border transition ${l.quote
+         ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+         : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}">${esc(l.label)}</a>`).join('')}</div>`;
 }
 
 function render() {
@@ -257,6 +315,7 @@ function render() {
       </section>`;
   }).join('');
 
+  $('#toggle-links').setAttribute('aria-pressed', String(showLinks));
   const open = tasks.filter((t) => t.day_of_week && !t.is_completed);
   const hours = open.reduce((s, t) => s + (+t.estimated_hours || 0), 0);
   $('#summary').textContent = `${open.length} tâche${open.length > 1 ? 's' : ''} à faire · ${fmtH(hours)}`;
@@ -297,6 +356,7 @@ function folderHTML(p, { showClient }) {
           <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
           ${showClient ? `<span class="block text-xs text-slate-500 truncate">${esc(p.clients.name)}</span>` : ''}
         </button>
+        ${projectPendingHTML(p)}
         <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"
                 title="Archiver le projet (terminé)">Archiver</button>
       </div>
@@ -304,6 +364,12 @@ function folderHTML(p, { showClient }) {
         ${list.length ? list.map(parkedHTML).join('') : '<p class="text-xs text-slate-400">Aucune tâche rangée.</p>'}
       </div>
     </li>`;
+}
+
+function projectPendingHTML(p) {
+  const n = pendingByProject(comments, tasks.concat(history), p.id);
+  return n ? `<span class="shrink-0 inline-flex items-center gap-1 mt-0.5 text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5 tabular-nums"
+    title="${n} commentaire${n > 1 ? 's' : ''} non traité${n > 1 ? 's' : ''}" data-lot="Lot 10">${BUBBLE}${n}</span>` : '';
 }
 
 // Sas d'attente : projets en cours sans tâche planifiée dans la semaine, ou ayant des tâches rangées dans leur dossier.
@@ -548,7 +614,56 @@ assignForm.addEventListener('submit', async (e) => {
   }
 });
 
+// Commentaires : ajout direct depuis la carte, coche « traité », suppression, dépliage.
+$('#board').addEventListener('submit', (e) => {
+  const taskId = e.target.dataset.commentForm;
+  if (!taskId) return;
+  e.preventDefault();
+  const input = e.target.body;
+  let body;
+  try { body = parseComment(input.value); } catch (ex) { toast(ex.message, 'error'); return; }
+  run(async () => {
+    const [created] = await api('task_comments', '', { method: 'POST', body: { task_id: taskId, body }, prefer: 'return=representation' });
+    comments.push(created);
+    openComments.add(taskId);
+    render();
+    document.querySelector(`[data-comment-form="${taskId}"] input`)?.focus();
+  });
+});
+
+function toggleComment(id, done) {
+  const c = comments.find((x) => x.id === id);
+  if (!c) return;
+  const prev = c.is_done;
+  c.is_done = done;
+  render();
+  refreshProjectDialog();
+  run(() => api('task_comments', `?id=eq.${id}`, { method: 'PATCH', body: { is_done: done } }), () => { c.is_done = prev; refreshProjectDialog(); });
+}
+
+function deleteComment(id) {
+  const snapshot = comments;
+  comments = comments.filter((x) => x.id !== id);
+  render();
+  refreshProjectDialog();
+  run(() => api('task_comments', `?id=eq.${id}`, { method: 'DELETE' }), () => { comments = snapshot; refreshProjectDialog(); });
+}
+
+function onCommentAction(e) {
+  const toggle = e.target.closest('[data-comments]')?.dataset.comments;
+  if (toggle) {
+    if (openComments.has(toggle)) openComments.delete(toggle); else openComments.add(toggle);
+    render();
+    return true;
+  }
+  const del = e.target.dataset.deleteComment;
+  if (del) { deleteComment(del); return true; }
+  return false;
+}
+
 $('#board').addEventListener('change', (e) => {
+  const commentId = e.target.dataset.commentToggle;
+  if (commentId) return toggleComment(commentId, e.target.checked);
   const id = e.target.dataset.toggle;
   if (!id) return;
   const t = tasks.find((x) => x.id === id);
@@ -560,14 +675,19 @@ $('#board').addEventListener('change', (e) => {
 
 // Édition / suppression : cartes du planning et tâches rangées dans le sas
 function onTaskAction(e) {
+  if (onCommentAction(e)) return;
   const editId = e.target.dataset.edit;
   if (editId) return openEdit(editId);
   const id = e.target.dataset.delete;
   if (!id) return;
-  const snapshot = tasks;
+  const t = tasks.find((x) => x.id === id);
+  const n = taskComments(id).length;
+  if (n && !confirm(`Supprimer « ${t.task_name} » et ses ${n} commentaire${n > 1 ? 's' : ''} ?`)) return;
+  const snapshot = { tasks, comments };
   tasks = tasks.filter((x) => x.id !== id);
+  comments = comments.filter((c) => c.task_id !== id);
   render();
-  run(() => db.remove(id), () => { tasks = snapshot; });
+  run(() => db.remove(id), () => { ({ tasks, comments } = snapshot); });
 }
 $('#board').addEventListener('click', onTaskAction);
 $('#waiting').addEventListener('click', onTaskAction);
@@ -652,24 +772,63 @@ function prefillAdd(project, day) {
 }
 
 // Nouvelle semaine
-$('#new-week').addEventListener('click', () => {
+// Archive les tâches terminées (sauf `keepIds`, gardées dans le planning) et ramène le reste sur Lundi.
+function startNewWeek(keepIds = []) {
   const archivedAt = new Date().toISOString();
-  const next = newWeek(tasks, history, archivedAt);
-  if (!confirm(`Nouvelle semaine : archiver ${next.finished} tâche(s) terminée(s) dans l'historique des projets et ramener les autres sur Lundi ?`)) return;
+  const next = newWeek(tasks, history, archivedAt, keepIds);
+  const keep = keepIds.length ? `&id=not.in.(${keepIds.join(',')})` : '';
   const snapshot = { tasks, history };
   ({ tasks, history } = next);
   render();
   run(
     async () => {
       if (next.finished) {
-        await api('tasks', '?is_completed=eq.true&archived_at=is.null', { method: 'PATCH', body: { archived_at: archivedAt } });
+        await api('tasks', `?is_completed=eq.true&archived_at=is.null${keep}`, { method: 'PATCH', body: { archived_at: archivedAt } });
       }
       if (next.moving) {
         await api('tasks', '?is_completed=eq.false&archived_at=is.null&day_of_week=not.is.null', { method: 'PATCH', body: { day_of_week: 'Lundi' } });
+        if (keepIds.length) {
+          await api('tasks', `?id=in.(${keepIds.join(',')})&day_of_week=not.is.null`, { method: 'PATCH', body: { day_of_week: 'Lundi' } });
+        }
       }
+      if (keepIds.length) toast(`${keepIds.length} tâche${keepIds.length > 1 ? 's' : ''} gardée${keepIds.length > 1 ? 's' : ''} dans le planning`);
     },
     () => { tasks = snapshot.tasks; history = snapshot.history; }
   );
+}
+
+const weekDialog = $('#week-dialog');
+let weekPending = [];
+
+$('#new-week').addEventListener('click', () => {
+  weekPending = finishedWithPending(tasks, comments);
+  const finished = tasks.filter((t) => t.is_completed).length;
+  if (!weekPending.length) {
+    if (confirm(`Nouvelle semaine : archiver ${finished} tâche(s) terminée(s) dans l'historique des projets et ramener les autres sur Lundi ?`)) startNewWeek();
+    return;
+  }
+  $('#week-pending').innerHTML = weekPending.map(({ task: t, count }) => `
+    <li class="flex items-center gap-2 px-3 py-2 text-sm">
+      <span class="min-w-0 flex-1"><span class="block truncate font-medium">${esc(t.task_name)}</span>
+        <span class="block truncate text-xs text-slate-500">${esc(taskClient(t))} · ${esc(taskProject(t))}</span></span>
+      <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5 tabular-nums">${BUBBLE}${count}</span>
+    </li>`).join('');
+  const others = finished - weekPending.length;
+  $('#week-summary').textContent = `${finished} tâche${finished > 1 ? 's' : ''} terminée${finished > 1 ? 's' : ''} au total`
+    + (others > 1 ? ` : les ${others} autres seront archivées dans tous les cas.`
+      : others ? ' : l’autre sera archivée dans tous les cas.' : '.');
+  weekDialog.showModal();
+});
+
+weekDialog.addEventListener('click', (e) => { if (e.target === weekDialog) weekDialog.close(); });
+$('#week-cancel').addEventListener('click', () => weekDialog.close());
+$('#week-archive').addEventListener('click', () => { weekDialog.close(); startNewWeek(); });
+$('#week-keep').addEventListener('click', () => { weekDialog.close(); startNewWeek(weekPending.map((x) => x.task.id)); });
+
+$('#toggle-links').addEventListener('click', () => {
+  showLinks = !showLinks;
+  try { localStorage.setItem(LINKS_KEY, showLinks ? 'on' : 'off'); } catch { /* stockage indisponible */ }
+  render();
 });
 
 // Import JSON
@@ -776,17 +935,19 @@ $('#waiting').addEventListener('click', (e) => {
 const projectDialog = $('#project-dialog');
 const projectEditForm = $('#project-edit-form');
 
-function openProject(id) {
+function openProject(id, { keepForm = false } = {}) {
   const p = projects.find((x) => x.id === id);
   if (!p) return;
   projectEditForm.dataset.id = id;
-  projectEditForm.project_name.value = p.name;
-  projectEditForm.year.value = p.year ?? '';
-  projectEditForm.quote_label.value = p.quote_label ?? '';
-  projectEditForm.quote_url.value = p.quote_url ?? '';
+  if (!keepForm) {
+    projectEditForm.project_name.value = p.name;
+    projectEditForm.year.value = p.year ?? '';
+    projectEditForm.quote_label.value = p.quote_label ?? '';
+    projectEditForm.quote_url.value = p.quote_url ?? '';
+    $('#project-error').classList.add('hidden');
+  }
   $('#project-client').textContent = p.clients.name;
   renderProjectLinks(p);
-  $('#project-error').classList.add('hidden');
   const current = tasks.filter((t) => t.project_id === id);
   const past = history.filter((t) => t.project_id === id);
   const time = projectTime(tasks, history, id);
@@ -794,12 +955,18 @@ function openProject(id) {
     <div><dt class="text-xs text-slate-500">Tâches</dt><dd class="text-sm font-semibold">${time.count}</dd></div>
     <div><dt class="text-xs text-slate-500">Temps prévu</dt><dd class="text-sm font-semibold">${fmtH(time.planned)}</dd></div>
     <div><dt class="text-xs text-slate-500">Temps passé</dt><dd class="text-sm font-semibold">${fmtH(time.spent)}</dd></div>`;
-  const row = (t, status) => `
-    <li class="flex items-center gap-2 text-sm py-1.5 border-b border-slate-100 last:border-0">
-      <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
-      <span class="text-xs text-slate-500">${esc(status)}</span>
-      <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+  const row = (t, status) => {
+    const list = taskComments(t.id);
+    return `
+    <li class="py-1.5 border-b border-slate-100 last:border-0">
+      <div class="flex items-center gap-2 text-sm">
+        <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
+        <span class="text-xs text-slate-500">${esc(status)}</span>
+        <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+      </div>
+      ${list.length ? `<ul class="mt-1 pl-3 space-y-1" data-lot="Lot 10">${list.map(commentHTML).join('')}</ul>` : ''}
     </li>`;
+  };
   const date = (t) => new Date(t.archived_at).toLocaleDateString('fr-FR');
   $('#project-tasks').innerHTML = (current.length || past.length)
     ? current.map((t) => row(t, t.is_completed ? 'Terminée' : t.day_of_week || 'Sas')).join('')
@@ -808,10 +975,27 @@ function openProject(id) {
           + past.map((t) => row(t, `Terminée · ${date(t)}`)).join('')
         : '')
     : '<li class="text-sm text-slate-400 py-1">Aucune tâche rattachée.</li>';
-  projectDialog.showModal();
+  if (!projectDialog.open) projectDialog.showModal();
 }
 
 projectDialog.addEventListener('click', (e) => { if (e.target === projectDialog) projectDialog.close(); });
+
+// Rafraîchit la liste des tâches du détail projet ouvert (commentaires cochés / supprimés).
+function refreshProjectDialog() {
+  if (!projectDialog.open) return;
+  const scroll = $('#project-tasks').scrollTop;
+  openProject(projectEditForm.dataset.id, { keepForm: true });
+  $('#project-tasks').scrollTop = scroll;
+}
+
+$('#project-tasks').addEventListener('change', (e) => {
+  const id = e.target.dataset.commentToggle;
+  if (id) toggleComment(id, e.target.checked);
+});
+$('#project-tasks').addEventListener('click', (e) => {
+  const id = e.target.dataset.deleteComment;
+  if (id) deleteComment(id);
+});
 $('#project-close').addEventListener('click', () => projectDialog.close());
 $('#project-plan').addEventListener('click', () => {
   const p = projects.find((x) => x.id === projectEditForm.dataset.id);
@@ -828,14 +1012,11 @@ const linkHTML = (label, url, extra = '') => `
   </li>`;
 
 function renderProjectLinks(p) {
-  const own = links.filter((l) => l.project_id === p.id);
-  const quote = p.quote_url
-    ? linkHTML(p.quote_label || 'Devis', p.quote_url, '<span class="text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5">Devis</span>')
-    : '';
-  $('#project-links').innerHTML = quote + own.map((l) => linkHTML(l.label, l.url,
-    `<button type="button" class="text-slate-300 hover:text-red-500 text-base leading-none transition" data-delete-link="${l.id}"
+  $('#project-links').innerHTML = linksOf(p, links).map((l) => linkHTML(l.label, l.url, l.quote
+    ? '<span class="text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5">Devis</span>'
+    : `<button type="button" class="text-slate-300 hover:text-red-500 text-base leading-none transition" data-delete-link="${l.id}"
              title="Supprimer le lien" aria-label="Supprimer le lien ${esc(l.label)}">×</button>`)).join('')
-    || (quote ? '' : '<li class="text-sm text-slate-400">Aucun lien pour le moment.</li>');
+    || '<li class="text-sm text-slate-400">Aucun lien pour le moment.</li>';
 }
 
 $('#link-form').addEventListener('submit', async (e) => {
@@ -1177,6 +1358,9 @@ const TOURS = {
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
         content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la modifier (✎) ou la supprimer, et coche-la une fois terminée.' },
+      { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 10',
+        title: 'Commentaires et liens',
+        content: 'Écris un commentaire directement sur une carte (Entrée pour l’ajouter). Le compteur ambre indique les commentaires non traités ; clique dessus pour les cocher. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },
       { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 3',
         title: 'Le sas d’attente',
         content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, son temps passé et le renommer.' },
@@ -1334,6 +1518,8 @@ $('#logout').addEventListener('click', () => {
   projects = [];
   clients = [];
   links = [];
+  comments = [];
+  openComments.clear();
   setAuthed(false);
 });
 
@@ -1342,7 +1528,9 @@ async function start() {
   setAuthed(true);
   render();
   await run(async () => {
-    [clients, projects, tasks, history, links] = await Promise.all([db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks()]);
+    [clients, projects, tasks, history, links, comments] = await Promise.all([
+      db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(),
+    ]);
     render();
   });
   setTimeout(() => startTour('onboarding-v1'), 400); // une seule fois (état mémorisé)
