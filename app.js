@@ -3,28 +3,74 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi'];
 const REST = `${SUPABASE_URL}/rest/v1/tasks`;
-const HEADERS = {
-  apikey: SUPABASE_ANON_KEY,
-  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-  'Content-Type': 'application/json',
-};
+const AUTH = `${SUPABASE_URL}/auth/v1`;
+const SESSION_KEY = 'planning_session';
 
 let tasks = [];
+let session = null;
+
+// ---------- Authentification (Supabase Auth, RLS) ----------
+function loadSession() {
+  try { session = JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { session = null; }
+}
+
+function saveSession(data) {
+  session = data && {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    expires_at: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
+  };
+  try {
+    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch { /* stockage indisponible : la session reste en mémoire */ }
+}
+
+async function authRequest(grant, body) {
+  const res = await fetch(`${AUTH}/token?grant_type=${grant}`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_code === 'invalid_credentials' || data.msg === 'Invalid login credentials' || data.error_description === 'Invalid login credentials'
+    ? 'Email ou mot de passe incorrect.'
+    : data.error_description || data.msg || `Authentification refusée (${res.status})`);
+  return data;
+}
+
+async function refreshSession() {
+  if (!session?.refresh_token) throw new Error('Session expirée');
+  saveSession(await authRequest('refresh_token', { refresh_token: session.refresh_token }));
+}
 
 // ---------- Supabase (REST) ----------
-async function api(path = '', { method = 'GET', body, prefer } = {}) {
+function headers(extra) {
+  return {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+}
+
+async function api(path = '', { method = 'GET', body, prefer } = {}, retried = false) {
   const res = await fetch(REST + path, {
     method,
-    headers: { ...HEADERS, ...(prefer ? { Prefer: prefer } : {}) },
+    headers: headers(prefer ? { Prefer: prefer } : undefined),
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (res.status === 401 && session && !retried) {
+    try { await refreshSession(); } catch { setAuthed(false); throw new Error('Session expirée, reconnecte-toi.'); }
+    return api(path, { method, body, prefer }, true);
+  }
   if (!res.ok) throw new Error(`Supabase ${res.status} : ${await res.text()}`);
   return res.status === 204 ? null : res.json();
 }
 
 const db = {
   list: () => api('?select=*&order=created_at.asc'),
-  insert: (row) => api('', { method: 'POST', body: row, prefer: 'return=representation' }),
+  insert: (rows) => api('', { method: 'POST', body: rows, prefer: 'return=representation' }),
   update: (id, patch) => api(`?id=eq.${id}`, { method: 'PATCH', body: patch }),
   remove: (id) => api(`?id=eq.${id}`, { method: 'DELETE' }),
 };
@@ -38,6 +84,22 @@ function showError(msg) {
   const el = $('#error');
   el.textContent = msg;
   el.classList.toggle('hidden', !msg);
+}
+
+let toastTimer;
+function toast(msg, type = 'success') {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.toggle('bg-slate-900', type !== 'error');
+  el.classList.toggle('bg-red-600', type === 'error');
+  el.classList.remove('opacity-0', 'translate-y-4');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('opacity-0', 'translate-y-4'), type === 'error' ? 6000 : 3500);
+}
+
+function setAuthed(ok) {
+  $('#login').classList.toggle('hidden', ok);
+  $('#app').classList.toggle('hidden', !ok);
 }
 
 async function run(action, rollback) {
@@ -191,9 +253,86 @@ $('#new-week').addEventListener('click', () => {
   );
 });
 
-// ---------- Init ----------
-run(async () => {
-  tasks = await db.list();
-  render();
+// Import JSON
+const TASK_FIELDS = ['client_name', 'project_name', 'task_name'];
+
+function normalizeTask(raw, i) {
+  const label = `Élément ${i + 1}`;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${label} : un objet est attendu.`);
+  const row = {};
+  TASK_FIELDS.forEach((k) => { row[k] = String(raw[k] ?? '').trim(); });
+  if (!row.task_name) throw new Error(`${label} : "task_name" est obligatoire.`);
+  const hours = raw.estimated_hours == null || raw.estimated_hours === '' ? 0 : Number(raw.estimated_hours);
+  if (!Number.isFinite(hours) || hours < 0) throw new Error(`${label} : "estimated_hours" doit être un nombre positif.`);
+  row.estimated_hours = hours;
+  row.day_of_week = raw.day_of_week ?? 'Lundi';
+  if (!DAYS.includes(row.day_of_week)) throw new Error(`${label} : "day_of_week" doit être parmi ${DAYS.join(', ')}.`);
+  row.is_completed = raw.is_completed === true;
+  return row;
+}
+
+$('#import-json').addEventListener('click', () => $('#import-file').click());
+
+$('#import-file').addEventListener('change', async (e) => {
+  const input = e.target;
+  const file = input.files[0];
+  if (!file) return;
+  try {
+    showError('');
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      throw new Error('Fichier invalide : ce n’est pas du JSON valide.');
+    }
+    const list = Array.isArray(data) ? data : [data];
+    if (!list.length) throw new Error('Le fichier ne contient aucune tâche.');
+    const rows = list.map(normalizeTask);
+    const created = await db.insert(rows);
+    tasks = await db.list().catch(() => tasks.concat(created));
+    render();
+    toast(`${created.length} tâche${created.length > 1 ? 's' : ''} importée${created.length > 1 ? 's' : ''}`);
+  } catch (err) {
+    console.error(err);
+    const offline = err instanceof TypeError;
+    toast(offline ? 'Erreur réseau : import impossible, réessaie.' : err.message, 'error');
+  } finally {
+    input.value = ''; // permet de ré-importer le même fichier
+  }
 });
-render();
+
+// Connexion / déconnexion
+$('#login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const err = $('#login-error');
+  err.classList.add('hidden');
+  try {
+    saveSession(await authRequest('password', { email: f.email.value.trim(), password: f.password.value }));
+    f.password.value = '';
+    await start();
+  } catch (ex) {
+    err.textContent = ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message;
+    err.classList.remove('hidden');
+  }
+});
+
+$('#logout').addEventListener('click', () => {
+  saveSession(null);
+  tasks = [];
+  setAuthed(false);
+});
+
+// ---------- Init ----------
+async function start() {
+  setAuthed(true);
+  render();
+  await run(async () => {
+    tasks = await db.list();
+    render();
+  });
+}
+
+loadSession();
+if (session) start();
+else setAuthed(false);

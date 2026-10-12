@@ -29,17 +29,42 @@
   </style>
 </head>
 <body class="bg-slate-50 text-slate-900 min-h-screen antialiased">
-  <div class="max-w-[1400px] mx-auto px-5 sm:px-8 py-8">
+  <!-- Connexion (requise par les règles RLS) -->
+  <div id="login" class="hidden min-h-screen flex items-center justify-center px-5">
+    <form id="login-form" class="w-full max-w-sm bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
+      <h1 class="text-lg font-semibold tracking-tight">Planning hebdomadaire</h1>
+      <p class="text-sm text-slate-500">Connecte-toi pour accéder à ton planning.</p>
+      <input name="email" type="email" required placeholder="Email" autocomplete="username"
+        class="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+      <input name="password" type="password" required placeholder="Mot de passe" autocomplete="current-password"
+        class="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+      <p id="login-error" class="hidden text-sm text-red-700"></p>
+      <button type="submit"
+        class="w-full px-3 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">
+        Se connecter
+      </button>
+    </form>
+  </div>
+
+  <div id="app" class="hidden max-w-[1400px] mx-auto px-5 sm:px-8 py-8">
 
     <header class="flex flex-wrap items-center justify-between gap-4 mb-6">
       <div>
         <h1 class="text-xl font-semibold tracking-tight">Planning hebdomadaire</h1>
         <p id="summary" class="text-sm text-slate-500 mt-0.5">&nbsp;</p>
       </div>
-      <button id="new-week"
-        class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
-        Nouvelle Semaine
-      </button>
+      <div class="flex items-center gap-2">
+        <input id="import-file" type="file" accept=".json,application/json" class="hidden" />
+        <button id="import-json"
+          class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
+          Importer JSON
+        </button>
+        <button id="new-week"
+          class="text-sm font-medium px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 active:scale-[.98] transition">
+          Nouvelle Semaine
+        </button>
+        <button id="logout" class="text-sm text-slate-500 hover:text-slate-900 px-2 py-2 transition">Déconnexion</button>
+      </div>
     </header>
 
     <form id="add-form"
@@ -66,6 +91,9 @@
 
     <main id="board" class="grid grid-cols-1 md:grid-cols-5 gap-3"></main>
   </div>
+
+  <div id="toast" role="status" aria-live="polite"
+    class="fixed bottom-6 left-1/2 -translate-x-1/2 translate-y-4 opacity-0 pointer-events-none transition-all duration-300 text-sm font-medium text-white bg-slate-900 rounded-lg px-4 py-2.5 shadow-lg max-w-[90vw]"></div>
 
   <script src="app.js"></script>
 </body>
