@@ -23,6 +23,10 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.15.1', type: 'patch', lot: 'Lot 15', date: '2026-10-16',
+    items: ['Mobile : les cinq onglets (dont Réglages) tiennent sur la largeur de l’écran.'],
+  },
+  {
     version: '1.15.0', type: 'mineure', lot: 'Lot 15', date: '2026-10-16',
     items: [
       'Tâches récurrentes : chaque semaine, ou chaque mois (1ᵉʳ, 2ᵉ, 3ᵉ, 4ᵉ ou dernier jour donné du mois).',
