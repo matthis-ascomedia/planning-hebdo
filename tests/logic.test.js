@@ -806,3 +806,64 @@ describe('groupDay', () => {
     assert.deepEqual(groups[0].tasks.map((t) => t.id), ['x', 'y']);
   });
 });
+
+describe('ordre manuel des conteneurs (group_rank)', () => {
+  const labels = [{ id: 'meet', name: 'Réunion', color: 'bleu', is_meeting: true, position: 1 }];
+  const t = (id, clientId, extra = {}) => task({
+    id, client_name: clientId, project_name: 'P', projects: { id: 'p', name: 'P', clients: { id: clientId, name: clientId } }, ...extra,
+  });
+
+  test('clientKey : identifiant du client du projet, sinon son nom normalisé', () => {
+    assert.equal(L.clientKey(t('a', 'c1')), 'c1');
+    assert.equal(L.clientKey(task({ client_name: ' Acme ' })), 'n:acme');
+  });
+
+  test('groupDay : groupes classés d’abord par rang (le plus petit de leurs tâches), les autres ensuite', () => {
+    const list = [
+      t('a', 'c1'),
+      t('m', 'c3', { label_ids: ['meet'], start_time: '08:00' }), // réunion tôt mais sans rang
+      t('b', 'c2', { group_rank: 1 }),
+      t('c', 'c1', { group_rank: 2 }),
+    ];
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c2', 'c1', 'c3']);
+  });
+
+  test('placeAt : déplace une clé à un index (calculé sans elle)', () => {
+    assert.deepEqual(L.placeAt(['a', 'b', 'c', 'd'], 'd', 1), ['a', 'd', 'b', 'c']);
+    assert.deepEqual(L.placeAt(['a', 'b', 'c'], 'a', 2), ['b', 'c', 'a']);
+    assert.deepEqual(L.placeAt(['a', 'b'], 'x', 1), ['a', 'x', 'b']); // nouvelle clé
+    assert.deepEqual(L.placeAt(['a', 'b'], 'a', 99), ['b', 'a']);
+  });
+
+  test('rankPatches : un PATCH par groupe dont un rang change', () => {
+    const groups = [
+      { key: 'c2', tasks: [{ id: 'b', group_rank: 1 }] },
+      { key: 'c1', tasks: [{ id: 'a', group_rank: null }, { id: 'c', group_rank: 2 }] },
+      { key: 'c3', tasks: [{ id: 'm', group_rank: 7 }] },
+    ];
+    assert.deepEqual(L.rankPatches(groups), [{ ids: ['a', 'c'], rank: 2 }, { ids: ['m'], rank: 3 }]);
+  });
+
+  test('dropIndex : nombre de milieux d’éléments au-dessus du pointeur', () => {
+    assert.equal(L.dropIndex([10, 50, 90], 5), 0);
+    assert.equal(L.dropIndex([10, 50, 90], 60), 2);
+    assert.equal(L.dropIndex([10, 50, 90], 200), 3);
+    assert.equal(L.dropIndex([], 10), 0);
+  });
+
+  test('mergeOrder : ordres concaténés sans doublon (Lundi d’abord, puis les jours suivants)', () => {
+    assert.deepEqual(L.mergeOrder([['c1', 'c2'], ['c3', 'c1'], [], ['c4']]), ['c1', 'c2', 'c3', 'c4']);
+  });
+});
+
+describe('ordre des dossiers du sas (sas_position)', () => {
+  const p = (id, pos) => ({ id, sas_position: pos });
+
+  test('sortFolders : par position, sans position à la fin (ordre conservé)', () => {
+    assert.deepEqual(L.sortFolders([p('a', null), p('b', 2), p('c', 1), p('d', null)]).map((x) => x.id), ['c', 'b', 'a', 'd']);
+  });
+
+  test('folderPatches : positions 1..n, seulement celles qui changent', () => {
+    assert.deepEqual(L.folderPatches([p('c', 1), p('a', null), p('b', 2)]), [{ id: 'a', sas_position: 2 }, { id: 'b', sas_position: 3 }]);
+  });
+});

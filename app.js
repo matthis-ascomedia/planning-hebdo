@@ -4,6 +4,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
+  clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
   comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -22,6 +23,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.18.0', type: 'mineure', lot: 'Lot 18', date: '2026-10-16',
+    items: [
+      'Glisser-déposer : réorganise les conteneurs client d’une journée (un trait indique l’endroit du dépôt).',
+      'Glisser un conteneur sur un autre jour y déplace toutes ses tâches, à l’endroit choisi.',
+      'Sas d’attente (vue Projets) : les dossiers se réordonnent par glisser-déposer.',
+    ],
+  },
   {
     version: '1.17.0', type: 'mineure', lot: 'Lot 17', date: '2026-10-16',
     items: [
@@ -481,7 +490,7 @@ function cardHTML(t) {
   const surface = taskSurface(t);
   return `
     <article class="card group relative ${surface || 'bg-white'} border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing ${surface ? 'hover:shadow-md' : 'hover:border-slate-300'} transition ${t.is_completed ? 'opacity-60' : ''}"
-             draggable="true" data-id="${t.id}">${taskBodyHTML(t, `${taskClient(t)} · ${taskProject(t)}`)}
+             draggable="true" data-id="${t.id}" data-group="${esc(clientKey(t))}">${taskBodyHTML(t, `${taskClient(t)} · ${taskProject(t)}`)}
     </article>`;
 }
 
@@ -491,8 +500,10 @@ function clientGroupHTML(g) {
   const single = g.projects.length === 1;
   const header = single ? `${g.client} · ${g.projects[0]}` : g.client;
   return `
-    <section class="client-group rounded-lg bg-white border border-slate-200 shadow-sm overflow-hidden" data-lot="Lot 17" aria-label="${esc(header)}">
-      <p class="px-2.5 pt-2 pb-0.5 text-xs font-medium text-slate-500 truncate" title="${esc(header)}">${esc(header)}</p>
+    <section class="client-group rounded-lg bg-white border border-slate-200 shadow-sm overflow-hidden" data-lot="Lot 17" aria-label="${esc(header)}"
+             draggable="true" data-group="${esc(g.key)}">
+      <p class="px-2.5 pt-2 pb-0.5 text-xs font-medium text-slate-500 truncate cursor-grab active:cursor-grabbing" data-lot="Lot 18"
+         title="Glisser pour déplacer tout le conteneur">${esc(header)}</p>
       <div>${g.tasks.map((t, i) => `
         <article class="card group relative ${taskSurface(t)} ${i ? 'border-t border-t-slate-100' : ''} p-2.5 cursor-grab active:cursor-grabbing hover:bg-slate-50/60 transition ${t.is_completed ? 'opacity-60' : ''}"
                  draggable="true" data-id="${t.id}">${taskBodyHTML(t, single ? '' : taskProject(t))}
@@ -581,7 +592,7 @@ function render() {
           <h2 class="text-sm font-semibold">${day}</h2>
           <span class="text-xs font-medium text-slate-500 tabular-nums" data-total="${day}">${fmtH(total)}</span>
         </div>
-        <div class="flex flex-col gap-2 flex-1">${groupDay(list, labels).map(clientGroupHTML).join('')}</div>
+        <div class="flex flex-col gap-2 flex-1" data-groups>${groupDay(list, labels).map(clientGroupHTML).join('')}</div>
       </section>`;
   }).join('');
 
@@ -663,7 +674,7 @@ function projectPendingHTML(p) {
 
 // Sas d'attente : projets en cours sans tâche planifiée dans la semaine, ou ayant des tâches rangées dans leur dossier.
 function renderWaiting() {
-  const waiting = filterProjects(waitingProjects(projects, tasks), sasQuery);
+  const waiting = filterProjects(sortFolders(waitingProjects(projects, tasks)), sasQuery);
   $('#waiting-count').textContent = waiting.length;
   document.querySelectorAll('[data-sas-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sasView === sasView)));
   let html;
@@ -1091,56 +1102,147 @@ async function deleteTaskForever(id) {
 $('#board').addEventListener('click', onTaskAction);
 $('#waiting').addEventListener('click', onTaskAction);
 
-// Drag & drop : planning (jours) <-> sas d'attente (tâche rangée dans le dossier de son projet)
+// Drag & drop : tâches et conteneurs client (jours <-> sas), dossiers du sas (réordonnés ou planifiés).
 let dragId = null; // tâche en cours de déplacement
+let dragGroup = null; // conteneur client en cours de déplacement : { day, key }
 let dragFolder = null; // projet (dossier du sas) en cours de déplacement
+let dropAt = 0; // position d'insertion calculée au survol
 const board = $('#planning-view');
+const indicator = Object.assign(document.createElement('div'), { className: 'drop-indicator h-0.5 -my-1 rounded-full bg-slate-900 pointer-events-none' });
 
 board.addEventListener('dragstart', (e) => {
   const card = e.target.closest('.card');
-  const folder = e.target.closest('.folder');
-  if (!card && !folder) return;
+  const group = !card && e.target.closest('.client-group');
+  const folder = !card && !group && e.target.closest('.folder');
+  if (!card && !group && !folder) return;
   if (card) dragId = card.dataset.id;
+  else if (group) dragGroup = { day: group.closest('.col').dataset.day, key: group.dataset.group };
   else dragFolder = folder.dataset.folder;
+  e.stopPropagation();
   e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', dragId || dragFolder);
-  const el = card || folder;
+  e.dataTransfer.setData('text/plain', dragId || dragGroup?.key || dragFolder);
+  const el = card || group || folder;
   requestAnimationFrame(() => el.classList.add('dragging'));
 });
 
-board.addEventListener('dragend', () => {
+function clearDrag() {
   dragId = null;
+  dragGroup = null;
   dragFolder = null;
+  indicator.remove();
   document.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
   document.querySelectorAll('.drag-over').forEach((el) => el.classList.remove('drag-over'));
-});
+}
+board.addEventListener('dragend', clearDrag);
 
 // Cible de dépôt : une colonne de jour, ou l'ensemble du sas (day = null)
 const dropTarget = (e) => e.target.closest('.col, #waiting');
 
+// Tâches déplacées : la tâche glissée, ou toutes celles du conteneur glissé.
+const movingTasks = () => (dragGroup
+  ? tasks.filter((t) => t.day_of_week === dragGroup.day && clientKey(t) === dragGroup.key)
+  : tasks.filter((t) => t.id === dragId));
+const movingKey = () => dragGroup?.key ?? (dragId ? clientKey(tasks.find((t) => t.id === dragId)) : null);
+
+// Place l'indicateur parmi les éléments d'une liste (hors élément de même clé) et mémorise l'index.
+function placeIndicator(list, items, y) {
+  const mids = items.map((el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; });
+  dropAt = dropIndex(mids, y);
+  const before = items[dropAt];
+  if (before) list.insertBefore(indicator, before); else list.append(indicator);
+}
+
+const sasReorderable = () => sasView === 'project' && !sasQuery.trim();
+
 board.addEventListener('dragover', (e) => {
   const zone = dropTarget(e);
-  if (!zone || !(dragId || dragFolder)) return;
-  if (dragFolder && !zone.dataset.day) return; // un projet se dépose sur un jour uniquement
+  if (!zone || !(dragId || dragGroup || dragFolder)) return;
+  const day = zone.dataset.day;
+  if (dragFolder && !day && !sasReorderable()) return; // vue par client ou recherche : pas de réordonnancement
   e.preventDefault();
   document.querySelectorAll('.drag-over').forEach((el) => el !== zone && el.classList.remove('drag-over'));
   zone.classList.add('drag-over');
+  if (day && !dragFolder) {
+    const key = movingKey();
+    const list = zone.querySelector('[data-groups]');
+    placeIndicator(list, [...list.children].filter((el) => el.dataset.group && el.dataset.group !== key), e.clientY);
+  } else if (!day && dragFolder) {
+    const list = $('#waiting-list');
+    placeIndicator(list, [...list.querySelectorAll('.folder')].filter((el) => el.dataset.folder !== dragFolder), e.clientY);
+  } else {
+    indicator.remove();
+  }
 });
 
 board.addEventListener('drop', (e) => {
   const zone = dropTarget(e);
-  if (!zone || !(dragId || dragFolder)) return;
+  if (!zone || !(dragId || dragGroup || dragFolder)) return;
   e.preventDefault();
-  if (dragFolder) return dropFolder(dragFolder, zone.dataset.day);
   const day = zone.dataset.day ?? null;
-  const t = tasks.find((x) => x.id === dragId);
-  dragId = null;
-  if (!t || t.day_of_week === day) return render();
-  const prev = t.day_of_week;
-  t.day_of_week = day;
-  render();
-  run(() => db.update(t.id, { day_of_week: day }), () => { t.day_of_week = prev; });
+  const at = dropAt;
+  if (dragFolder) {
+    const id = dragFolder;
+    clearDrag();
+    return day ? dropFolder(id, day) : reorderFolder(id, at);
+  }
+  const moving = movingTasks();
+  const fromGroup = !!dragGroup;
+  clearDrag();
+  if (!moving.length) return render();
+  if (!day) return toSas(moving);
+  // Une ligne d'un conteneur lâchée dans son propre jour : rien à faire (l'ordre se règle par conteneur).
+  const t = moving[0];
+  if (!fromGroup && t.day_of_week === day && tasks.filter((x) => x.day_of_week === day && clientKey(x) === clientKey(t)).length > 1) return render();
+  placeInDay(moving, day, at);
 });
+
+// Place des tâches (une, ou tout un conteneur) dans un jour, leur conteneur à la position `at` ;
+// renumérote les conteneurs de ce jour (group_rank 1..n).
+function placeInDay(moving, day, at) {
+  const key = clientKey(moving[0]);
+  const prev = moving.map((t) => ({ t, day: t.day_of_week }));
+  const ranks = tasks.map((t) => ({ t, rank: t.group_rank ?? null }));
+  moving.forEach((t) => { t.day_of_week = day; });
+  const groups = groupDay(tasks.filter((t) => t.day_of_week === day), labels);
+  const order = placeAt(groups.map((g) => g.key), key, at).map((k) => groups.find((g) => g.key === k));
+  const patches = rankPatches(order);
+  patches.forEach((p) => p.ids.forEach((id) => { tasks.find((t) => t.id === id).group_rank = p.rank; }));
+  const changedDay = prev.filter((x) => x.day !== day).map((x) => x.t.id);
+  render();
+  run(async () => {
+    if (changedDay.length) await api('tasks', `?id=in.(${changedDay.join(',')})`, { method: 'PATCH', body: { day_of_week: day } });
+    for (const p of patches) await api('tasks', `?id=in.(${p.ids.join(',')})`, { method: 'PATCH', body: { group_rank: p.rank } });
+  }, () => {
+    prev.forEach((x) => { x.t.day_of_week = x.day; });
+    ranks.forEach((x) => { x.t.group_rank = x.rank; });
+  });
+}
+
+// Tâches (ou conteneur) lâchées sur le sas : rangées dans le dossier de leur projet.
+function toSas(moving) {
+  const prev = moving.map((t) => ({ t, day: t.day_of_week }));
+  const ids = moving.filter((t) => t.day_of_week).map((t) => t.id);
+  if (!ids.length) return render();
+  moving.forEach((t) => { t.day_of_week = null; });
+  render();
+  run(() => api('tasks', `?id=in.(${ids.join(',')})`, { method: 'PATCH', body: { day_of_week: null } }),
+    () => prev.forEach((x) => { x.t.day_of_week = x.day; }));
+}
+
+// Dossier du sas lâché dans le sas : nouvelle position, renumérotation des dossiers (sas_position 1..n).
+function reorderFolder(projectId, at) {
+  const ordered = sortFolders(waitingProjects(projects, tasks));
+  const keys = placeAt(ordered.map((p) => p.id), projectId, at);
+  const next = keys.map((id) => ordered.find((p) => p.id === id));
+  const patches = folderPatches(next);
+  if (!patches.length) return render();
+  const prev = next.map((p) => ({ p, pos: p.sas_position ?? null }));
+  patches.forEach((x) => { projects.find((p) => p.id === x.id).sas_position = x.sas_position; });
+  render();
+  run(async () => {
+    for (const x of patches) await api('projects', `?id=eq.${x.id}`, { method: 'PATCH', body: { sas_position: x.sas_position } });
+  }, () => prev.forEach((x) => { x.p.sas_position = x.pos; }));
+}
 
 // Dépôt d'un projet du sas sur un jour : toutes ses tâches rangées sont planifiées ce jour-là.
 function dropFolder(projectId, day) {
@@ -1153,10 +1255,10 @@ function dropFolder(projectId, day) {
     toast(`Aucune tâche rangée : ajoute-en une pour ${day}`);
     return render();
   }
-  parked.forEach((t) => { t.day_of_week = day; });
+  parked.forEach((t) => { t.day_of_week = day; t.group_rank = null; });
   render();
   run(
-    () => api('tasks', `?project_id=eq.${projectId}&day_of_week=is.null`, { method: 'PATCH', body: { day_of_week: day } }),
+    () => api('tasks', `?project_id=eq.${projectId}&day_of_week=is.null`, { method: 'PATCH', body: { day_of_week: day, group_rank: null } }),
     () => parked.forEach((t) => { t.day_of_week = null; })
   );
 }
@@ -1184,7 +1286,14 @@ function startNewWeek(keepIds = []) {
   const keep = keepIds.length ? `&id=not.in.(${keepIds.join(',')})` : '';
   const stay = stayIds.length ? `&id=not.in.(${stayIds.join(',')})` : '';
   const snapshot = { tasks, history, weeks };
+  const dayOrder = mergeOrder(DAYS.map((d) => groupDay(tasks.filter((t) => t.day_of_week === d), labels).map((g) => g.key)));
   ({ tasks, history } = next);
+  // Lundi : conteneurs renumérotés selon leur ordre d'origine (Lundi d'abord, puis Mardi…).
+  const monday = groupDay(tasks.filter((t) => t.day_of_week === 'Lundi'), labels);
+  const mondayPatches = next.moving
+    ? rankPatches(dayOrder.map((k) => monday.find((g) => g.key === k)).filter(Boolean))
+    : [];
+  mondayPatches.forEach((p) => p.ids.forEach((id) => { tasks.find((t) => t.id === id).group_rank = p.rank; }));
   render();
   let week = null;
   run(
@@ -1206,6 +1315,7 @@ function startNewWeek(keepIds = []) {
         if (keepIds.length) {
           await api('tasks', `?id=in.(${keepIds.join(',')})&day_of_week=not.is.null`, { method: 'PATCH', body: { day_of_week: 'Lundi' } });
         }
+        for (const p of mondayPatches) await api('tasks', `?id=in.(${p.ids.join(',')})`, { method: 'PATCH', body: { group_rank: p.rank } });
       }
       if (due.length) {
         const created = await db.insert(due);
@@ -1353,6 +1463,7 @@ editForm.addEventListener('submit', async (e) => {
       task_name: f.task_name.value.trim(),
       estimated_hours: parseFloat(f.estimated_hours.value) || 0,
       day_of_week: f.day_of_week.value || null,
+      ...((f.day_of_week.value || null) !== t.day_of_week ? { group_rank: null } : {}),
     };
     // Modèle de série = la tâche telle qu'enregistrée (heure et lien conservés s'ils sont masqués).
     const template = {
@@ -2218,7 +2329,7 @@ const TOURS = {
         content: 'Choisis « Chaque semaine » ou « Chaque mois » (ex. le 1ᵉʳ mardi) : « Nouvelle Semaine » recréera la tâche quand il le faut. Une occurrence non faite reste sur son jour. Les séries se retrouvent dans Réglages.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
-        content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
+        content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
       { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 10',
         title: 'Commentaires et liens',
         content: 'Écris un commentaire directement sur une carte (Entrée pour l’ajouter). Le compteur ambre indique les commentaires non traités ; clique dessus pour les cocher. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },

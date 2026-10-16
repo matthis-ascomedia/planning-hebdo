@@ -104,24 +104,62 @@
   // Colonne d'un jour regroupée par client : un groupe par client (projets distincts listés), tâches
   // triées par sortDay (réunions par heure d'abord). Le groupe qui a la réunion la plus tôt passe en tête,
   // puis les autres dans l'ordre d'apparition de leur première tâche.
+  // Clé du conteneur d'une tâche : identifiant du client de son projet, sinon son nom normalisé.
+  const clientKey = (t) => t.projects?.clients?.id ?? `n:${normalizeText(t.projects?.clients?.name ?? t.client_name ?? '')}`;
+
+  // Ordre manuel (glisser-déposer) : un groupe a pour rang le plus petit `group_rank` de ses tâches.
+  // Les groupes classés passent d'abord (par rang), les autres ensuite dans l'ordre par défaut.
   function groupDay(tasks, labels) {
     const groups = new Map();
     tasks.forEach((t) => {
-      const client = t.projects?.clients?.name ?? t.client_name ?? '';
-      const key = t.projects?.clients?.id ?? `n:${normalizeText(client)}`;
-      if (!groups.has(key)) groups.set(key, { key, client, projects: [], tasks: [] });
+      const key = clientKey(t);
+      if (!groups.has(key)) groups.set(key, { key, client: t.projects?.clients?.name ?? t.client_name ?? '', projects: [], tasks: [] });
       const g = groups.get(key);
       const project = t.projects?.name ?? t.project_name ?? '';
       if (!g.projects.includes(project)) g.projects.push(project);
       g.tasks.push(t);
     });
     const firstMeeting = (g) => g.tasks.find((t) => t.start_time && isMeeting(t, labels))?.start_time ?? null;
+    const rankOf = (g) => {
+      const ranks = g.tasks.map((t) => t.group_rank).filter((r) => r != null);
+      return ranks.length ? Math.min(...ranks) : null;
+    };
+    const byDefault = (a, b) => (a.at && b.at ? a.at.localeCompare(b.at) : a.at ? -1 : b.at ? 1 : 0) || a.order - b.order;
     return [...groups.values()]
-      .map((g, i) => ({ ...g, tasks: sortDay(g.tasks, labels), order: i }))
-      .map((g) => ({ ...g, at: firstMeeting(g) }))
-      .sort((a, b) => (a.at && b.at ? a.at.localeCompare(b.at) : a.at ? -1 : b.at ? 1 : 0) || a.order - b.order)
-      .map(({ order, at, ...g }) => g);
+      .map((g, i) => ({ ...g, tasks: sortDay(g.tasks, labels), order: i, at: firstMeeting(g), rank: rankOf(g) }))
+      .sort((a, b) => (a.rank != null && b.rank != null ? a.rank - b.rank : a.rank != null ? -1 : b.rank != null ? 1 : byDefault(a, b)))
+      .map(({ order, at, rank, ...g }) => g);
   }
+
+  // Ordre de clés après déplacement de `key` à la position `index` (calculée sans elle).
+  function placeAt(keys, key, index) {
+    const rest = keys.filter((k) => k !== key);
+    rest.splice(Math.min(Math.max(index, 0), rest.length), 0, key);
+    return rest;
+  }
+
+  // Rangs 1..n d'une colonne ordonnée : un PATCH par groupe dont au moins une tâche change de rang.
+  const rankPatches = (groups) => groups
+    .map((g, i) => ({ ids: g.tasks.map((t) => t.id), rank: i + 1, stale: g.tasks.some((t) => t.group_rank !== i + 1) }))
+    .filter((p) => p.stale)
+    .map(({ ids, rank }) => ({ ids, rank }));
+
+  // Position d'insertion : nombre d'éléments dont le milieu vertical est au-dessus du pointeur.
+  const dropIndex = (mids, y) => mids.filter((m) => m < y).length;
+
+  // Ordres successifs fusionnés sans doublon (« Nouvelle Semaine » : Lundi, puis les jours suivants).
+  const mergeOrder = (lists) => [...new Set(lists.flat())];
+
+  // Dossiers du sas : par position manuelle, ceux sans position ensuite (ordre reçu conservé).
+  const sortFolders = (projects) => projects
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => (a.p.sas_position ?? Infinity) - (b.p.sas_position ?? Infinity) || a.i - b.i)
+    .map((x) => x.p);
+
+  const folderPatches = (ordered) => ordered
+    .map((p, i) => ({ id: p.id, sas_position: i + 1, stale: p.sas_position !== i + 1 }))
+    .filter((x) => x.stale)
+    .map(({ id, sas_position }) => ({ id, sas_position }));
 
   function labelNameError(labels, id, name) {
     if (!String(name ?? '').trim()) return 'Le nom de l’étiquette est obligatoire.';
@@ -409,6 +447,7 @@
 
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
+    clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
     comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
