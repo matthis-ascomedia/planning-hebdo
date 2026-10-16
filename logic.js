@@ -34,6 +34,20 @@
       .slice(0, 5);
   }
 
+  // Noms de projets proposés à la saisie d'une tâche : projets en cours du client, puis ses projets
+  // terminés, puis les autres noms existants (chacun une seule fois, triés par nom dans chaque groupe).
+  function projectSuggestions(projects, client) {
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    const own = projects.filter((p) => client.trim() && same(p.clients.name, client));
+    const groups = [
+      own.filter((p) => p.status === 'en_cours').sort(byName).map((p) => ({ value: p.name, label: `${p.clients.name} · en cours` })),
+      own.filter((p) => p.status !== 'en_cours').sort(byName).map((p) => ({ value: p.name, label: `${p.clients.name} · terminé` })),
+      [...projects].sort(byName).map((p) => ({ value: p.name, label: '' })),
+    ];
+    const seen = new Set();
+    return groups.flat().filter((s) => !seen.has(s.value.toLowerCase()) && seen.add(s.value.toLowerCase()));
+  }
+
   // Tâches d'un projet rangées dans le sas (pas de jour).
   const parkedTasks = (tasks, projectId) => tasks.filter((t) => t.project_id === projectId && !t.day_of_week);
 
@@ -251,7 +265,7 @@
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
-  return { DAYS, same, suggestProjects, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  return { DAYS, same, suggestProjects, projectSuggestions, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };

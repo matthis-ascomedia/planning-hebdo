@@ -2,7 +2,7 @@ const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
-const { DAYS, same, suggestProjects: suggestFrom, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
@@ -20,6 +20,15 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.12.0', type: 'mineure', lot: 'Lot 12', date: '2026-10-16',
+    items: [
+      'Le × d’une carte du planning la renvoie dans le sas (avec « Annuler ») ; la suppression définitive se fait depuis le sas ou la modale d’édition.',
+      'Archiver un projet demande désormais une confirmation.',
+      'Confirmations harmonisées dans une fenêtre aux couleurs de l’application.',
+      'Saisie d’une tâche : les projets du client choisi sont proposés en premier (en cours, puis terminés).',
+    ],
+  },
   {
     version: '1.11.1', type: 'patch', lot: 'Lot 11', date: '2026-10-12',
     items: [
@@ -228,15 +237,46 @@ function showError(msg) {
 }
 
 let toastTimer;
-function toast(msg, type = 'success') {
+// `action` : { label, run } — bouton dans le toast (ex. « Annuler »), qui le referme.
+function toast(msg, type = 'success', action = null) {
   const el = $('#toast');
+  const hide = () => el.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
   el.textContent = msg;
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'shrink-0 underline underline-offset-2 text-slate-200 hover:text-white';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => { hide(); action.run(); });
+    el.append(btn);
+  }
   el.classList.toggle('bg-slate-900', type !== 'error');
   el.classList.toggle('bg-red-600', type === 'error');
+  el.classList.toggle('pointer-events-none', !action);
   el.classList.remove('opacity-0', 'translate-y-4');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add('opacity-0', 'translate-y-4'), type === 'error' ? 6000 : 3500);
+  toastTimer = setTimeout(hide, type === 'error' || action ? 6000 : 3500);
 }
+
+// Confirmation dans une modale de l'application ; résout true si l'utilisateur confirme.
+const confirmDialog = $('#confirm-dialog');
+function askConfirm({ title, message = '', confirmLabel = 'Confirmer', danger = false }) {
+  $('#confirm-title').textContent = title;
+  $('#confirm-message').textContent = message;
+  const ok = $('#confirm-ok');
+  ok.textContent = confirmLabel;
+  ok.classList.toggle('bg-red-600', danger);
+  ok.classList.toggle('hover:bg-red-700', danger);
+  ok.classList.toggle('bg-slate-900', !danger);
+  ok.classList.toggle('hover:bg-slate-700', !danger);
+  confirmDialog.returnValue = '';
+  confirmDialog.showModal();
+  ok.focus();
+  return new Promise((resolve) => {
+    confirmDialog.addEventListener('close', () => resolve(confirmDialog.returnValue === 'ok'), { once: true });
+  });
+}
+confirmDialog.addEventListener('click', (e) => { if (e.target === confirmDialog) confirmDialog.close(); });
 
 function setAuthed(ok) {
   $('#login').classList.toggle('hidden', ok);
@@ -273,7 +313,7 @@ function cardHTML(t) {
         <button class="text-slate-400 hover:text-slate-900 text-sm leading-none px-0.5"
                 data-edit="${t.id}" data-lot="Lot 1" title="Modifier" aria-label="Modifier">✎</button>
         <button class="text-slate-400 hover:text-red-500 text-base leading-none px-0.5"
-                data-delete="${t.id}" title="Supprimer" aria-label="Supprimer">×</button>
+                data-unplan="${t.id}" data-lot="Lot 12" title="Retirer du planning (retour dans le sas)" aria-label="Retirer du planning">×</button>
       </div>
       <div class="mt-2 flex flex-wrap items-center gap-1.5">
         <span class="inline-block text-[11px] font-medium text-slate-600 bg-slate-100 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
@@ -348,8 +388,20 @@ function render() {
   renderHistory();
   renderClients();
   $('#clients-list').innerHTML = clients.map((c) => `<option value="${esc(c.name)}"></option>`).join('');
-  $('#projects-list').innerHTML = [...new Set(projects.map((p) => p.name))].map((n) => `<option value="${esc(n)}"></option>`).join('');
+  fillProjectList($('#add-form').client_name.value);
 }
+
+// Suggestions de projets (datalist partagée) : ceux du client saisi d'abord (en cours, puis terminés), puis les autres.
+function fillProjectList(client) {
+  $('#projects-list').innerHTML = projectSuggestions(projects, client || '')
+    .map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+}
+document.addEventListener('focusin', (e) => {
+  if (e.target.matches?.('input[list="projects-list"]')) fillProjectList(e.target.form?.client_name?.value);
+});
+document.addEventListener('input', (e) => {
+  if (e.target.name === 'client_name' && e.target.form?.project_name?.getAttribute('list') === 'projects-list') fillProjectList(e.target.value);
+});
 
 // Tâche rangée dans le dossier de son projet (sas d'attente) : glissable vers un jour du planning.
 function parkedHTML(t) {
@@ -361,7 +413,7 @@ function parkedHTML(t) {
       <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-slate-700 text-sm leading-none transition"
               data-edit="${t.id}" title="Modifier" aria-label="Modifier">✎</button>
       <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 text-base leading-none transition"
-              data-delete="${t.id}" title="Supprimer" aria-label="Supprimer">×</button>
+              data-delete="${t.id}" title="Supprimer définitivement" aria-label="Supprimer définitivement">×</button>
     </article>`;
 }
 
@@ -702,16 +754,54 @@ function onTaskAction(e) {
   if (onCommentAction(e)) return;
   const editId = e.target.dataset.edit;
   if (editId) return openEdit(editId);
+  const unplan = e.target.dataset.unplan;
+  if (unplan) return unplanTask(unplan);
   const id = e.target.dataset.delete;
-  if (!id) return;
+  if (id) deleteTaskForever(id);
+}
+
+// Retire une tâche du planning : elle retourne dans le dossier de son projet (sas), projet rouvert si besoin.
+function unplanTask(id) {
   const t = tasks.find((x) => x.id === id);
+  if (!t?.day_of_week) return;
+  const day = t.day_of_week;
+  const p = projects.find((x) => x.id === t.project_id);
+  const reopen = p && p.status !== 'en_cours';
+  t.day_of_week = null;
+  if (reopen) p.status = 'en_cours';
+  render();
+  run(async () => {
+    await db.update(id, { day_of_week: null });
+    if (reopen) await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: { status: 'en_cours' } });
+    toast(`« ${t.task_name} » est retournée dans le sas`, 'success', {
+      label: 'Annuler',
+      run: () => {
+        t.day_of_week = day;
+        render();
+        run(() => db.update(id, { day_of_week: day }), () => { t.day_of_week = null; });
+      },
+    });
+  }, () => { t.day_of_week = day; if (reopen) p.status = 'termine'; });
+}
+
+// Suppression définitive (sas ou modale d'édition), toujours confirmée ; les commentaires partent avec la tâche.
+async function deleteTaskForever(id) {
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return false;
   const n = taskComments(id).length;
-  if (n && !confirm(`Supprimer « ${t.task_name} » et ses ${n} commentaire${n > 1 ? 's' : ''} ?`)) return;
+  const ok = await askConfirm({
+    title: 'Supprimer définitivement la tâche ?',
+    message: `« ${t.task_name} » sera supprimée${n > 1 ? ` avec ses ${n} commentaires` : n ? ' avec son commentaire' : ''}. Cette action est irréversible.`,
+    confirmLabel: 'Supprimer',
+    danger: true,
+  });
+  if (!ok) return false;
   const snapshot = { tasks, comments };
   tasks = tasks.filter((x) => x.id !== id);
   comments = comments.filter((c) => c.task_id !== id);
   render();
   run(() => db.remove(id), () => { ({ tasks, comments } = snapshot); });
+  return true;
 }
 $('#board').addEventListener('click', onTaskAction);
 $('#waiting').addEventListener('click', onTaskAction);
@@ -843,7 +933,8 @@ $('#new-week').addEventListener('click', () => {
     const question = finished
       ? `Nouvelle semaine : archiver ${finished} tâche(s) terminée(s), enregistrer la semaine dans l'historique et ramener les autres sur Lundi ?`
       : 'Aucune tâche terminée : rien à archiver, aucune semaine ne sera enregistrée. Ramener les tâches planifiées sur Lundi ?';
-    if (confirm(question)) startNewWeek();
+    askConfirm({ title: 'Nouvelle semaine', message: question, confirmLabel: finished ? 'Archiver et continuer' : 'Ramener sur Lundi' })
+      .then((ok) => { if (ok) startNewWeek(); });
     return;
   }
   $('#week-pending').innerHTML = weekPending.map(({ task: t, count }) => `
@@ -927,6 +1018,11 @@ function openEdit(id) {
 }
 
 editDialog.addEventListener('click', (e) => { if (e.target === editDialog) editDialog.close(); });
+$('#edit-delete').addEventListener('click', async () => {
+  editDialog.close();
+  const deleted = await deleteTaskForever(editForm.dataset.id);
+  if (!deleted) editDialog.showModal(); // annulation : on revient à l'édition
+});
 $('#edit-cancel').addEventListener('click', () => editDialog.close());
 
 editForm.addEventListener('submit', async (e) => {
@@ -963,13 +1059,27 @@ $('#waiting').addEventListener('click', (e) => {
   if (openId) {
     openProject(openId);
   } else if (finishId) {
-    const p = projects.find((x) => x.id === finishId);
-    const prev = p.status;
-    p.status = 'termine';
-    render();
-    run(() => api('projects', `?id=eq.${finishId}`, { method: 'PATCH', body: { status: 'termine' } }), () => { p.status = prev; });
+    finishProject(finishId);
   }
 });
+
+// Archivage d'un projet depuis le sas, après confirmation.
+async function finishProject(finishId) {
+  const p = projects.find((x) => x.id === finishId);
+  const n = parkedTasks(tasks, finishId).length;
+  const ok = await askConfirm({
+    title: `Archiver le projet « ${p.name} » ?`,
+    message: 'Il quitte le sas et rejoint l’onglet Archives, d’où tu pourras le rouvrir.'
+      + (n > 1 ? `\nSes ${n} tâches rangées resteront rattachées au projet.`
+        : n ? '\nSa tâche rangée restera rattachée au projet.' : ''),
+    confirmLabel: 'Archiver le projet',
+  });
+  if (!ok) return;
+  const prev = p.status;
+  p.status = 'termine';
+  render();
+  run(() => api('projects', `?id=eq.${finishId}`, { method: 'PATCH', body: { status: 'termine' } }), () => { p.status = prev; });
+}
 
 // Détail d'un projet : tâches rattachées, temps total, édition du nom
 const projectDialog = $('#project-dialog');
@@ -1426,7 +1536,8 @@ $('#client-project-form').addEventListener('submit', (e) => {
 $('#client-delete').addEventListener('click', async () => {
   const c = currentClient();
   const err = $('#client-error');
-  if (deleteClientBlocker(c, projects, DEFAULT_CLIENT) || !confirm(`Supprimer le client « ${c.name} » ?`)) return;
+  if (deleteClientBlocker(c, projects, DEFAULT_CLIENT)) return;
+  if (!await askConfirm({ title: `Supprimer le client « ${c.name} » ?`, message: 'Cette action est irréversible.', confirmLabel: 'Supprimer', danger: true })) return;
   try {
     await api('clients', `?id=eq.${c.id}`, { method: 'DELETE' });
     clients = clients.filter((x) => x.id !== c.id);
@@ -1486,7 +1597,7 @@ const TOURS = {
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
-        content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la modifier (✎) ou la supprimer, et coche-la une fois terminée.' },
+        content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
       { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 10',
         title: 'Commentaires et liens',
         content: 'Écris un commentaire directement sur une carte (Entrée pour l’ajouter). Le compteur ambre indique les commentaires non traités ; clique dessus pour les cocher. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },

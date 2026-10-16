@@ -518,3 +518,29 @@ describe('weekTasks', () => {
     assert.equal(L.weekTasks([task({ id: 'a', archived_at: '2026-10-12T08:00:00.000Z' })], week).length, 1);
   });
 });
+
+describe('projectSuggestions', () => {
+  const list = [
+    project('p1', 'Site vitrine', 'Acme'),
+    project('p2', 'Ancien site', 'Acme', 'termine'),
+    project('p3', 'Intranet', 'Globex'),
+    project('p4', 'Site vitrine', 'Globex'),
+    project('p5', 'Refonte', 'Acme'),
+  ];
+
+  test('projets en cours du client, puis ses terminés, puis les autres noms', () => {
+    const res = L.projectSuggestions(list, ' acme ');
+    assert.deepEqual(res.map((s) => s.value), ['Refonte', 'Site vitrine', 'Ancien site', 'Intranet']);
+    assert.deepEqual(res.map((s) => s.label), ['Acme · en cours', 'Acme · en cours', 'Acme · terminé', '']);
+  });
+
+  test('un nom déjà proposé pour le client n’est pas répété', () => {
+    const res = L.projectSuggestions(list, 'Acme');
+    assert.equal(res.filter((s) => s.value === 'Site vitrine').length, 1);
+  });
+
+  test('sans client (ou client inconnu) : tous les noms, triés, sans doublon', () => {
+    assert.deepEqual(L.projectSuggestions(list, '').map((s) => s.value), ['Ancien site', 'Intranet', 'Refonte', 'Site vitrine']);
+    assert.deepEqual(L.projectSuggestions(list, 'Initech').map((s) => s.label), ['', '', '', '']);
+  });
+});
