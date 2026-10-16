@@ -1,7 +1,7 @@
 const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 // Identifiant client OAuth Google (public, non secret) : Google Cloud > API et services > Identifiants.
 // Vide : le bouton « Google Agenda » explique comment le configurer.
-const GOOGLE_CLIENT_ID = '';
+const GOOGLE_CLIENT_ID = '741288364082-gis9o46ntlgr2ucse69ol8lkl5m48ihg.apps.googleusercontent.com';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
