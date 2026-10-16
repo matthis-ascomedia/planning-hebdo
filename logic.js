@@ -260,6 +260,60 @@
     return series.filter((s) => s.active && !busy.has(s.id) && matchesRule(s, monday));
   }
 
+  // ---- Import Google Agenda ----
+  // Lien de visio d'un événement : Google Meet, point d'entrée vidéo de la conférence, sinon un lien
+  // Meet / Zoom / Teams / Webex / Whereby trouvé dans le lieu ou la description.
+  const VISIO = /https?:\/\/[^\s"'<>]*(?:meet\.google\.com|zoom\.us|teams\.microsoft\.com|teams\.live\.com|webex\.com|whereby\.com)[^\s"'<>]*/i;
+  function extractMeetingLink(event) {
+    if (event.hangoutLink) return event.hangoutLink;
+    const video = event.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri;
+    if (video) return video;
+    return `${event.location || ''} ${event.description || ''}`.match(VISIO)?.[0] ?? '';
+  }
+
+  // Créneau d'un événement dans la semaine du lundi `monday` : jour du planning, heure locale, durée (quarts
+  // d'heure, 0,25 h minimum). null pour un événement annulé, sur la journée entière, le week-end ou hors semaine.
+  function eventSlot(event, monday) {
+    if (event.status === 'cancelled' || !event.start?.dateTime || !event.end?.dateTime) return null;
+    const start = new Date(event.start.dateTime);
+    const end = new Date(event.end.dateTime);
+    const index = Math.round((midnight(start) - midnight(monday)) / 86400000);
+    if (index < 0 || index > 4) return null;
+    const hours = Math.max(0.25, Math.round(((end - start) / 3600000) * 4) / 4);
+    const pad = (n) => String(n).padStart(2, '0');
+    return { day: DAYS[index], start_time: `${pad(start.getHours())}:${pad(start.getMinutes())}`, hours };
+  }
+
+  // Projet proposé pour un événement : domaine e-mail d'un participant = site web d'un client, puis nom
+  // de client dans le titre, sinon le projet de repli (dernier utilisé). Projets en cours uniquement ; '' sinon.
+  function suggestProject(event, clients, projects, fallbackId) {
+    const open = projects.filter((p) => p.status === 'en_cours');
+    const firstOf = (clientId) => open.find((p) => p.client_id === clientId)?.id;
+    const host = (url) => { try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase(); } catch { return ''; } };
+    const domains = (event.attendees || []).filter((a) => !a.self && a.email).map((a) => a.email.split('@')[1].toLowerCase());
+    for (const c of clients) {
+      const h = c.website && host(c.website);
+      if (h && domains.some((d) => d === h || d.endsWith(`.${h}`)) && firstOf(c.id)) return firstOf(c.id);
+    }
+    const title = normalizeText(event.summary);
+    const named = clients.find((c) => normalizeText(c.name) && title.includes(normalizeText(c.name)) && firstOf(c.id));
+    if (named) return firstOf(named.id);
+    return open.some((p) => p.id === fallbackId) ? fallbackId : '';
+  }
+
+  // Statut de chaque événement proposé : déjà importé (identifiant mémorisé), déjà planifié (réunion au même
+  // créneau avec un lien), à compléter (réunion au même créneau sans lien), sinon nouveau.
+  function importPlan(items, tasks, history, labels) {
+    const imported = new Set(tasks.concat(history).map((t) => t.google_event_id).filter(Boolean));
+    return items.map((item) => {
+      if (imported.has(item.event.id)) return { ...item, status: 'imported' };
+      const same = tasks.find((t) => !t.google_event_id && t.day_of_week === item.slot.day
+        && t.start_time === item.slot.start_time && isMeeting(t, labels));
+      if (same) return { ...item, status: same.meeting_url ? 'exists' : 'complete', taskId: same.id };
+      return { ...item, status: 'new' };
+    });
+  }
+
   const RANKS = { 1: '1ᵉʳ', 2: '2ᵉ', 3: '3ᵉ', 4: '4ᵉ', 5: 'dernier' };
   function recurrenceLabel(series) {
     const day = String(series.day_of_week || '').toLowerCase();
@@ -448,7 +502,8 @@
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+    comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };

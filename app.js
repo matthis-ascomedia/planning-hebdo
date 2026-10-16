@@ -1,11 +1,15 @@
 const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
+// Identifiant client OAuth Google (public, non secret) : Google Cloud > API et services > Identifiants.
+// Vide : le bouton « Google Agenda » explique comment le configurer.
+const GOOGLE_CLIENT_ID = '';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel,
+  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
@@ -23,6 +27,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.19.0', type: 'mineure', lot: 'Lot 19', date: '2026-10-16',
+    items: [
+      'Bouton « Google Agenda » : importe les réunions visio de la semaine (Meet, Zoom, Teams, Webex) comme tâches « Réunion ».',
+      'Projet proposé d’après les participants ou le titre ; une réunion déjà saisie au même créneau est complétée avec son lien.',
+      'Un événement déjà importé n’est jamais recréé.',
+    ],
+  },
   {
     version: '1.18.0', type: 'mineure', lot: 'Lot 18', date: '2026-10-16',
     items: [
@@ -2273,6 +2285,251 @@ $('#labels-list').addEventListener('click', async (e) => {
   }
 });
 
+// ---------- Import Google Agenda (Google Identity Services, lecture seule, sans serveur) ----------
+const GCAL_API = 'https://www.googleapis.com/calendar/v3';
+const GCAL_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
+const GCAL_CALS_KEY = 'planning_gcal_calendars';
+const GCAL_PROJECT_KEY = 'planning_gcal_last_project';
+const gcalDialog = $('#gcal-dialog');
+let gcalToken = null; // { access_token, expires_at } — en mémoire seulement (environ 1 h)
+let gcalCalendars = [];
+let gcalItems = []; // événements proposés (plan d'import)
+
+// Script Google chargé à l'avance : la fenêtre de consentement doit s'ouvrir directement au clic.
+let gisLoading = null;
+function loadGis() {
+  if (window.google?.accounts?.oauth2) return Promise.resolve();
+  gisLoading ??= new Promise((resolve, reject) => {
+    const el = Object.assign(document.createElement('script'), { src: 'https://accounts.google.com/gsi/client', async: true });
+    el.onload = () => resolve();
+    el.onerror = () => { gisLoading = null; reject(new Error('Impossible de charger le service de connexion Google.')); };
+    document.head.append(el);
+  });
+  return gisLoading;
+}
+
+function gcalAccessToken() {
+  return new Promise((resolve, reject) => {
+    if (gcalToken && gcalToken.expires_at > Date.now() + 60000) return resolve(gcalToken.access_token);
+    if (!window.google?.accounts?.oauth2) return reject(new Error('Connexion Google en cours de chargement : réessaie dans un instant.'));
+    const client = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: GCAL_SCOPE,
+      callback: (resp) => {
+        if (resp.error) return reject(new Error(resp.error === 'access_denied' ? 'Accès à l’agenda refusé.' : `Connexion Google refusée (${resp.error}).`));
+        gcalToken = { access_token: resp.access_token, expires_at: Date.now() + (resp.expires_in || 3600) * 1000 };
+        resolve(gcalToken.access_token);
+      },
+      error_callback: (err) => reject(new Error(err?.type === 'popup_closed' ? 'Fenêtre Google fermée avant la fin.'
+        : err?.type === 'popup_failed_to_open' ? 'Fenêtre Google bloquée : autorise les fenêtres pop-up pour ce site.'
+          : 'Connexion Google impossible.')),
+    });
+    client.requestAccessToken();
+  });
+}
+
+async function gcalGet(path) {
+  const res = await fetch(`${GCAL_API}/${path}`, { headers: { Authorization: `Bearer ${gcalToken.access_token}` } });
+  if (res.status === 401) { gcalToken = null; throw new Error('Session Google expirée : relance l’import.'); }
+  if (res.status === 403) throw new Error('Accès refusé par Google : vérifie que l’API Google Calendar est activée dans le projet Google Cloud.');
+  if (!res.ok) throw new Error(`Google Agenda ${res.status} : ${await res.text()}`);
+  return res.json();
+}
+
+const gcalStatus = (msg, error = false) => {
+  const el = $('#gcal-status');
+  el.textContent = msg;
+  el.classList.toggle('text-red-700', error);
+  el.classList.toggle('text-slate-600', !error);
+};
+
+function storedCalendars() {
+  try { return JSON.parse(localStorage.getItem(GCAL_CALS_KEY)) || null; } catch { return null; }
+}
+
+$('#import-gcal').addEventListener('click', async () => {
+  const monday = planningMonday(new Date());
+  $('#gcal-week').textContent = `Semaine du ${monday.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })} : réunions visio du lundi au vendredi`;
+  $('#gcal-events').classList.add('hidden');
+  $('#gcal-calendars-box').classList.add('hidden');
+  $('#gcal-import').disabled = true;
+  gcalDialog.showModal();
+  if (!GOOGLE_CLIENT_ID) {
+    return gcalStatus('Connexion Google non configurée : il manque l’identifiant client OAuth (GOOGLE_CLIENT_ID dans app.js).', true);
+  }
+  if (!labels.some((l) => l.is_meeting)) {
+    return gcalStatus('Aucune étiquette « réunion » : crée-en une dans Réglages › Étiquettes avant d’importer.', true);
+  }
+  gcalStatus('Connexion à Google…');
+  try {
+    await gcalAccessToken(); // appelé tout de suite : la fenêtre Google s'ouvre dans le geste du clic
+    gcalStatus('Lecture de tes agendas…');
+    gcalCalendars = (await gcalGet('users/me/calendarList?minAccessRole=reader')).items || [];
+    renderGcalCalendars();
+    await loadGcalEvents();
+  } catch (ex) {
+    console.error(ex);
+    gcalStatus(ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message, true);
+  }
+});
+
+function selectedCalendars() {
+  const stored = storedCalendars();
+  const ids = gcalCalendars.map((c) => c.id);
+  const chosen = (stored || []).filter((id) => ids.includes(id));
+  return chosen.length ? chosen : gcalCalendars.filter((c) => c.primary).map((c) => c.id);
+}
+
+function renderGcalCalendars() {
+  const chosen = selectedCalendars();
+  $('#gcal-cal-count').textContent = gcalCalendars.filter((c) => chosen.includes(c.id)).map((c) => c.summaryOverride || c.summary).join(', ') || 'aucun';
+  $('#gcal-calendars').innerHTML = gcalCalendars.map((c) => `
+    <label class="flex items-center gap-2 text-sm text-slate-700 min-w-0">
+      <input type="checkbox" class="chk" data-gcal-cal="${esc(c.id)}" ${chosen.includes(c.id) ? 'checked' : ''} />
+      <span class="w-2.5 h-2.5 shrink-0 rounded-full" style="background:${esc(c.backgroundColor || '#94a3b8')}"></span>
+      <span class="truncate">${esc(c.summaryOverride || c.summary)}</span>
+    </label>`).join('');
+  $('#gcal-calendars-box').classList.remove('hidden');
+}
+
+$('#gcal-calendars').addEventListener('change', async () => {
+  const ids = [...document.querySelectorAll('[data-gcal-cal]:checked')].map((i) => i.dataset.gcalCal);
+  try { localStorage.setItem(GCAL_CALS_KEY, JSON.stringify(ids)); } catch { /* stockage indisponible */ }
+  renderGcalCalendars();
+  try { await loadGcalEvents(); } catch (ex) { gcalStatus(ex.message, true); }
+});
+
+async function loadGcalEvents() {
+  const monday = planningMonday(new Date());
+  const saturday = dayDate(monday, 'Vendredi');
+  saturday.setDate(saturday.getDate() + 1);
+  gcalStatus('Lecture des événements de la semaine…');
+  const seen = new Set();
+  const items = [];
+  for (const id of selectedCalendars()) {
+    const q = new URLSearchParams({ singleEvents: 'true', orderBy: 'startTime', maxResults: '250', timeMin: monday.toISOString(), timeMax: saturday.toISOString() });
+    const data = await gcalGet(`calendars/${encodeURIComponent(id)}/events?${q}`);
+    (data.items || []).forEach((event) => {
+      const slot = eventSlot(event, monday);
+      const link = extractMeetingLink(event);
+      if (!slot || !link || seen.has(event.id)) return; // même événement présent dans deux agendas : une fois
+      seen.add(event.id);
+      items.push({ event, slot, link });
+    });
+  }
+  items.sort((a, b) => DAYS.indexOf(a.slot.day) - DAYS.indexOf(b.slot.day) || a.slot.start_time.localeCompare(b.slot.start_time));
+  let fallback = '';
+  try { fallback = localStorage.getItem(GCAL_PROJECT_KEY) || ''; } catch { /* stockage indisponible */ }
+  gcalItems = importPlan(items, tasks, history, labels).map((it) => ({
+    ...it,
+    picked: it.status === 'new' || it.status === 'complete',
+    projectId: it.status === 'new' ? suggestProject(it.event, clients, projects, fallback) : '',
+  }));
+  renderGcalEvents();
+}
+
+const GCAL_BADGE = {
+  new: ['Nouvelle', 'bg-emerald-50 text-emerald-700'],
+  complete: ['Lien à compléter', 'bg-blue-50 text-blue-700'],
+  exists: ['Déjà planifiée', 'bg-slate-100 text-slate-500'],
+  imported: ['Déjà importée', 'bg-slate-100 text-slate-500'],
+};
+
+function renderGcalEvents() {
+  const open = projects.filter((p) => p.status === 'en_cours')
+    .sort((a, b) => a.clients.name.localeCompare(b.clients.name) || a.name.localeCompare(b.name));
+  const options = (selected) => '<option value="">Choisir un projet…</option>' + open.map((p) =>
+    `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.clients.name)} · ${esc(p.name)}</option>`).join('');
+  const list = $('#gcal-events');
+  list.innerHTML = gcalItems.map((it, i) => {
+    const [label, cls] = GCAL_BADGE[it.status];
+    const active = it.status === 'new' || it.status === 'complete';
+    const target = it.taskId && tasks.find((t) => t.id === it.taskId);
+    return `
+      <li class="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 ${active ? '' : 'opacity-60'}">
+        <input type="checkbox" class="chk" data-gcal-pick="${i}" ${it.picked ? 'checked' : ''} ${active ? '' : 'disabled'} aria-label="Importer ${esc(it.event.summary || 'cet événement')}" />
+        <span class="w-28 shrink-0 text-xs text-slate-600 tabular-nums">${it.slot.day} ${it.slot.start_time} · ${fmtH(it.slot.hours)}</span>
+        <span class="min-w-0 flex-1 basis-40">
+          <span class="block truncate text-sm font-medium">${esc(it.event.summary || 'Sans titre')}</span>
+          <span class="block truncate text-xs text-slate-500">${esc(hostOf(it.link))}</span>
+        </span>
+        ${it.status === 'new' ? `<select data-gcal-project="${i}" aria-label="Projet de la réunion"
+            class="max-w-full sm:max-w-[14rem] px-2 py-1 text-sm rounded-md bg-slate-50 border ${it.picked && !it.projectId ? 'border-red-300' : 'border-transparent'} focus:border-slate-300 focus:outline-none">${options(it.projectId)}</select>`
+          : target ? `<span class="text-xs text-slate-500 truncate max-w-[14rem]">« ${esc(target.task_name)} »</span>` : ''}
+        <span class="shrink-0 text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
+      </li>`;
+  }).join('') || '<li class="px-3 py-3 text-sm text-slate-400">Aucune réunion avec un lien de visio cette semaine dans les agendas choisis.</li>';
+  list.classList.remove('hidden');
+  const n = gcalItems.filter((it) => it.picked).length;
+  $('#gcal-import').disabled = !n;
+  $('#gcal-import').textContent = n ? `Importer (${n})` : 'Importer';
+  const counts = gcalItems.reduce((acc, it) => ({ ...acc, [it.status]: (acc[it.status] || 0) + 1 }), {});
+  gcalStatus(gcalItems.length
+    ? `${gcalItems.length} réunion${gcalItems.length > 1 ? 's' : ''} visio trouvée${gcalItems.length > 1 ? 's' : ''}`
+      + (counts.imported || counts.exists ? ` (${(counts.imported || 0) + (counts.exists || 0)} déjà dans le planning)` : '') + '.'
+    : '');
+}
+
+$('#gcal-events').addEventListener('change', (e) => {
+  const pick = e.target.dataset.gcalPick;
+  const proj = e.target.dataset.gcalProject;
+  if (pick != null) gcalItems[pick].picked = e.target.checked;
+  if (proj != null) gcalItems[proj].projectId = e.target.value;
+  renderGcalEvents();
+});
+
+$('#gcal-import').addEventListener('click', async () => {
+  const picked = gcalItems.filter((it) => it.picked);
+  const missing = picked.filter((it) => it.status === 'new' && !it.projectId);
+  if (missing.length) {
+    renderGcalEvents();
+    return gcalStatus(`Choisis le projet de ${missing.length > 1 ? `${missing.length} réunions` : 'la réunion'} encadrée${missing.length > 1 ? 's' : ''} en rouge.`, true);
+  }
+  const meetingLabel = [...labels].sort((a, b) => a.position - b.position).find((l) => l.is_meeting);
+  const rows = picked.filter((it) => it.status === 'new').map((it) => {
+    const p = projects.find((x) => x.id === it.projectId);
+    return {
+      project_id: p.id,
+      client_name: p.clients.name,
+      project_name: p.name,
+      task_name: (it.event.summary || 'Réunion').trim(),
+      estimated_hours: it.slot.hours,
+      day_of_week: it.slot.day,
+      is_completed: false,
+      label_ids: [meetingLabel.id],
+      start_time: it.slot.start_time,
+      meeting_url: it.link,
+      google_event_id: it.event.id,
+    };
+  });
+  const completes = picked.filter((it) => it.status === 'complete');
+  $('#gcal-import').disabled = true;
+  gcalStatus('Import en cours…');
+  try {
+    for (const it of completes) {
+      const patch = { meeting_url: it.link, google_event_id: it.event.id };
+      await db.update(it.taskId, patch);
+      Object.assign(tasks.find((t) => t.id === it.taskId), patch);
+    }
+    if (rows.length) tasks = tasks.concat(await db.insert(rows));
+    const last = rows.at(-1)?.project_id;
+    if (last) { try { localStorage.setItem(GCAL_PROJECT_KEY, last); } catch { /* stockage indisponible */ } }
+    gcalDialog.close();
+    render();
+    toast([rows.length && `${rows.length} réunion${rows.length > 1 ? 's' : ''} importée${rows.length > 1 ? 's' : ''}`,
+      completes.length && `${completes.length} complétée${completes.length > 1 ? 's' : ''}`].filter(Boolean).join(' · '));
+  } catch (ex) {
+    console.error(ex);
+    $('#gcal-import').disabled = false;
+    gcalStatus(ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message, true);
+  }
+});
+
+const closeGcal = () => gcalDialog.close();
+$('#gcal-close').addEventListener('click', closeGcal);
+$('#gcal-cancel').addEventListener('click', closeGcal);
+gcalDialog.addEventListener('click', (e) => { if (e.target === gcalDialog) closeGcal(); });
+
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
 const LATEST = CHANGELOG[0].version;
@@ -2354,6 +2611,9 @@ const TOURS = {
       { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
         title: 'Nouvelle semaine',
         content: 'Les tâches terminées sont archivées (le temps passé est conservé), la semaine est enregistrée dans l’onglet Historique et les autres tâches reviennent sur Lundi.' },
+      { id: 'gcal', targetSelector: '#import-gcal', placement: 'bottom', lot: 'Lot 19',
+        title: 'Google Agenda',
+        content: 'Importe les réunions visio de la semaine depuis ton agenda : tu valides chaque réunion et son projet ; une réunion déjà saisie au même créneau reçoit simplement son lien.' },
       { id: 'changelog', targetSelector: '#open-changelog', placement: 'bottom', lot: 'Lot 5',
         title: 'Journal des mises à jour',
         content: 'Retrouve ici les nouveautés de chaque version, surligne celles d’un lot, et rejoue ce tutoriel quand tu veux.' },
@@ -2517,6 +2777,7 @@ async function start() {
     ]);
     render();
   });
+  if (GOOGLE_CLIENT_ID) loadGis().catch(() => { /* réessayé au clic sur « Google Agenda » */ });
   setTimeout(() => startTour('onboarding-v1'), 400); // une seule fois (état mémorisé)
 }
 

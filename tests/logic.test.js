@@ -867,3 +867,79 @@ describe('ordre des dossiers du sas (sas_position)', () => {
     assert.deepEqual(L.folderPatches([p('c', 1), p('a', null), p('b', 2)]), [{ id: 'a', sas_position: 2 }, { id: 'b', sas_position: 3 }]);
   });
 });
+
+describe('Google Agenda : lecture des événements', () => {
+  const ev = (over = {}) => ({
+    id: 'e1', status: 'confirmed', summary: 'Point Acme',
+    start: { dateTime: '2026-10-20T09:30:00+02:00' }, end: { dateTime: '2026-10-20T10:15:00+02:00' },
+    ...over,
+  });
+
+  test('extractMeetingLink : Meet, conférence, puis lien visio dans le lieu ou la description', () => {
+    assert.equal(L.extractMeetingLink(ev({ hangoutLink: 'https://meet.google.com/abc-defg-hij' })), 'https://meet.google.com/abc-defg-hij');
+    assert.equal(L.extractMeetingLink(ev({ conferenceData: { entryPoints: [{ entryPointType: 'phone', uri: 'tel:+33' }, { entryPointType: 'video', uri: 'https://zoom.us/j/123' }] } })), 'https://zoom.us/j/123');
+    assert.equal(L.extractMeetingLink(ev({ location: 'https://teams.microsoft.com/l/meetup-join/19%3a' })), 'https://teams.microsoft.com/l/meetup-join/19%3a');
+    assert.equal(L.extractMeetingLink(ev({ description: 'Rejoindre : <a href="https://acme.webex.com/meet/x">ici</a>' })), 'https://acme.webex.com/meet/x');
+    assert.equal(L.extractMeetingLink(ev({ location: 'Salle B', description: 'https://acme.fr' })), '');
+  });
+
+  test('eventSlot : jour du planning, heure locale, durée arrondie au quart d’heure', () => {
+    const slot = L.eventSlot(ev(), new Date(2026, 9, 19));
+    assert.equal(slot.day, 'Mardi');
+    assert.equal(slot.hours, 0.75);
+    assert.match(slot.start_time, /^\d{2}:\d{2}$/);
+  });
+
+  test('eventSlot : hors semaine, journée entière, week-end ou annulé -> null', () => {
+    const monday = new Date(2026, 9, 19);
+    assert.equal(L.eventSlot(ev({ start: { date: '2026-10-20' }, end: { date: '2026-10-21' } }), monday), null);
+    assert.equal(L.eventSlot(ev({ start: { dateTime: '2026-10-24T10:00:00' }, end: { dateTime: '2026-10-24T11:00:00' } }), monday), null);
+    assert.equal(L.eventSlot(ev({ start: { dateTime: '2026-10-27T10:00:00' }, end: { dateTime: '2026-10-27T11:00:00' } }), monday), null);
+    assert.equal(L.eventSlot(ev({ status: 'cancelled' }), monday), null);
+  });
+});
+
+describe('Google Agenda : projet proposé', () => {
+  const clients = [{ id: 'c1', name: 'Acme', website: 'https://www.acme.fr' }, { id: 'c2', name: 'Globex', website: null }];
+  const projects = [
+    { id: 'p1', name: 'Site', status: 'en_cours', client_id: 'c1', clients: clients[0] },
+    { id: 'p0', name: 'Ancien', status: 'termine', client_id: 'c1', clients: clients[0] },
+    { id: 'p2', name: 'Intranet', status: 'en_cours', client_id: 'c2', clients: clients[1] },
+  ];
+
+  test('par domaine e-mail d’un participant = site web du client', () => {
+    const e = { summary: 'Point', attendees: [{ email: 'moi@ascomedia.fr', self: true }, { email: 'jean@acme.fr' }] };
+    assert.equal(L.suggestProject(e, clients, projects, 'p2'), 'p1');
+  });
+
+  test('sinon par nom de client dans le titre (accents et casse ignorés)', () => {
+    assert.equal(L.suggestProject({ summary: 'Démo GLOBEX', attendees: [] }, clients, projects, 'p1'), 'p2');
+  });
+
+  test('sinon le projet de repli (dernier utilisé), s’il est en cours', () => {
+    assert.equal(L.suggestProject({ summary: 'Divers' }, clients, projects, 'p2'), 'p2');
+    assert.equal(L.suggestProject({ summary: 'Divers' }, clients, projects, 'p0'), '');
+  });
+});
+
+describe('Google Agenda : plan d’import', () => {
+  const labels = [{ id: 'meet', is_meeting: true, position: 1 }];
+  const slot = { day: 'Mardi', start_time: '09:30', hours: 1 };
+
+  test('nouveau, à compléter (réunion sans lien au même créneau), déjà importé, déjà planifié', () => {
+    const tasks = [
+      task({ id: 'x', day_of_week: 'Mardi', label_ids: ['meet'], start_time: '09:30', meeting_url: null }),
+      task({ id: 'y', day_of_week: 'Mardi', label_ids: ['meet'], start_time: '14:00', meeting_url: 'https://zoom.us/j/1' }),
+    ];
+    const history = [task({ id: 'h', google_event_id: 'old' })];
+    const items = [
+      { event: { id: 'e1' }, slot, link: 'https://meet.google.com/a' },
+      { event: { id: 'old' }, slot: { ...slot, start_time: '11:00' }, link: 'https://meet.google.com/b' },
+      { event: { id: 'e3' }, slot: { ...slot, start_time: '14:00' }, link: 'https://zoom.us/j/1' },
+      { event: { id: 'e4' }, slot: { ...slot, start_time: '16:00' }, link: 'https://meet.google.com/c' },
+    ];
+    assert.deepEqual(L.importPlan(items, tasks, history, labels).map((i) => [i.event.id, i.status, i.taskId ?? null]), [
+      ['e1', 'complete', 'x'], ['old', 'imported', null], ['e3', 'exists', 'y'], ['e4', 'new', null],
+    ]);
+  });
+});
