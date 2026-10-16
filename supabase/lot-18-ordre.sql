@@ -7,3 +7,6 @@
 
 alter table public.tasks add column if not exists group_rank integer;
 alter table public.projects add column if not exists sas_position integer;
+
+-- Recharge le schéma de l'API.
+notify pgrst, 'reload schema';

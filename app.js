@@ -28,6 +28,10 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.19.1', type: 'patch', lot: 'Lot 19', date: '2026-10-16',
+    items: ['Import Google Agenda : une réunion par ligne sur écran large (horaire, projet et statut alignés).'],
+  },
+  {
     version: '1.19.0', type: 'mineure', lot: 'Lot 19', date: '2026-10-16',
     items: [
       'Bouton « Google Agenda » : importe les réunions visio de la semaine (Meet, Zoom, Teams, Webex) comme tâches « Réunion ».',
@@ -2448,15 +2452,17 @@ function renderGcalEvents() {
     return `
       <li class="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 ${active ? '' : 'opacity-60'}">
         <input type="checkbox" class="chk" data-gcal-pick="${i}" ${it.picked ? 'checked' : ''} ${active ? '' : 'disabled'} aria-label="Importer ${esc(it.event.summary || 'cet événement')}" />
-        <span class="w-28 shrink-0 text-xs text-slate-600 tabular-nums">${it.slot.day} ${it.slot.start_time} · ${fmtH(it.slot.hours)}</span>
+        <span class="w-32 shrink-0 whitespace-nowrap text-xs text-slate-600 tabular-nums">${it.slot.day} ${it.slot.start_time} · ${fmtH(it.slot.hours)}</span>
         <span class="min-w-0 flex-1 basis-40">
           <span class="block truncate text-sm font-medium">${esc(it.event.summary || 'Sans titre')}</span>
           <span class="block truncate text-xs text-slate-500">${esc(hostOf(it.link))}</span>
         </span>
+        <span class="ml-auto flex min-w-0 max-w-full items-center gap-2">
         ${it.status === 'new' ? `<select data-gcal-project="${i}" aria-label="Projet de la réunion"
-            class="max-w-full sm:max-w-[14rem] px-2 py-1 text-sm rounded-md bg-slate-50 border ${it.picked && !it.projectId ? 'border-red-300' : 'border-transparent'} focus:border-slate-300 focus:outline-none">${options(it.projectId)}</select>`
-          : target ? `<span class="text-xs text-slate-500 truncate max-w-[14rem]">« ${esc(target.task_name)} »</span>` : ''}
-        <span class="shrink-0 text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
+            class="min-w-0 max-w-[13rem] px-2 py-1 text-sm rounded-md bg-slate-50 border ${it.picked && !it.projectId ? 'border-red-300' : 'border-transparent'} focus:border-slate-300 focus:outline-none">${options(it.projectId)}</select>`
+          : target ? `<span class="min-w-0 text-xs text-slate-500 truncate max-w-[13rem]">« ${esc(target.task_name)} »</span>` : ''}
+        <span class="shrink-0 whitespace-nowrap text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
+        </span>
       </li>`;
   }).join('') || '<li class="px-3 py-3 text-sm text-slate-400">Aucune réunion avec un lien de visio cette semaine dans les agendas choisis.</li>';
   list.classList.remove('hidden');
