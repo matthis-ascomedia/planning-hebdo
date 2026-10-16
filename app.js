@@ -3,7 +3,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
-  LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime,
+  LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -22,6 +22,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.17.0', type: 'mineure', lot: 'Lot 17', date: '2026-10-16',
+    items: [
+      'Cartes : le client et le projet passent au-dessus du titre de la tâche.',
+      'Les tâches d’un même client sur une journée sont rangées dans un conteneur commun.',
+      'Sas d’attente : client (et type) au-dessus du nom du projet, avec le logo du client.',
+    ],
+  },
   {
     version: '1.16.0', type: 'mineure', lot: 'Lot 16', date: '2026-10-16',
     items: [
@@ -423,15 +431,19 @@ function occurrenceRow(series) {
 // Pictogramme « duplication » (deux feuilles superposées).
 const COPY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" class="w-3.5 h-3.5 pointer-events-none" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></svg>';
 
-function cardHTML(t) {
+// Surface d'une tâche : teinte de son étiquette la plus prioritaire (fond léger + liseré gauche).
+const taskSurface = (t) => {
+  const main = primaryLabel(t, labels);
+  return main ? `${tint(main).card} border-l-[3px] ${tint(main).edge}` : '';
+};
+
+// Corps d'une tâche, de haut en bas : origine (client · projet), réunion, titre, pastilles, liens, commentaires.
+function taskBodyHTML(t, origin) {
   const done = t.is_completed;
   const main = primaryLabel(t, labels);
-  const meeting = isMeeting(t, labels);
-  const surface = main ? `${tint(main).card} border border-slate-200 border-l-[3px] ${tint(main).edge}` : 'bg-white border border-slate-200';
   return `
-    <article class="card group relative ${surface} rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing ${main ? 'hover:shadow-md' : 'hover:border-slate-300'} transition ${done ? 'opacity-60' : ''}"
-             draggable="true" data-id="${t.id}">
-      ${meeting ? `
+      ${origin ? `<p class="text-xs text-slate-500 truncate mb-1 pr-16" title="${esc(origin)}">${esc(origin)}</p>` : ''}
+      ${isMeeting(t, labels) ? `
       <div class="flex items-center gap-2 mb-1.5" data-lot="Lot 14">
         <span class="text-base font-semibold tabular-nums ${tint(main).text}">${esc(t.start_time || '--:--')}</span>
         ${t.meeting_url ? `<a href="${esc(t.meeting_url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="${esc(t.meeting_url)}"
@@ -439,10 +451,7 @@ function cardHTML(t) {
       </div>` : ''}
       <div class="flex items-start gap-2">
         <input type="checkbox" class="chk mt-0.5" ${done ? 'checked' : ''} data-toggle="${t.id}" aria-label="Terminée" />
-        <div class="min-w-0 flex-1">
-          <p class="text-sm font-medium leading-snug break-words hyphens-auto ${done ? 'line-through text-slate-400' : ''}" lang="fr">${esc(t.task_name)}</p>
-          <p class="text-xs text-slate-500 mt-1 truncate">${esc(taskClient(t))} · ${esc(taskProject(t))}</p>
-        </div>
+        <p class="min-w-0 flex-1 text-sm font-medium leading-snug break-words hyphens-auto ${done ? 'line-through text-slate-400' : ''}" lang="fr">${esc(t.task_name)}</p>
       </div>
       <!-- Actions en surimpression au survol : le titre garde toute la largeur de la carte -->
       <div class="absolute top-1.5 right-1.5 flex items-center gap-0.5 rounded-md bg-white/95 px-1 py-0.5 shadow-sm ring-1 ring-slate-200 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
@@ -464,8 +473,32 @@ function cardHTML(t) {
       <form class="mt-2" data-comment-form="${t.id}" data-lot="Lot 10">
         <input name="body" autocomplete="off" maxlength="2000" placeholder="Commenter…" aria-label="Ajouter un commentaire à « ${esc(t.task_name)} »"
           class="w-full px-2 py-1 text-xs rounded-md bg-slate-900/[.04] border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-slate-300 focus:outline-none" />
-      </form>
+      </form>`;
+}
+
+// Carte seule (tâche unique de son client ce jour-là).
+function cardHTML(t) {
+  const surface = taskSurface(t);
+  return `
+    <article class="card group relative ${surface || 'bg-white'} border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing ${surface ? 'hover:shadow-md' : 'hover:border-slate-300'} transition ${t.is_completed ? 'opacity-60' : ''}"
+             draggable="true" data-id="${t.id}">${taskBodyHTML(t, `${taskClient(t)} · ${taskProject(t)}`)}
     </article>`;
+}
+
+// Conteneur client : en-tête « Client · Projet » (ou « Client » si plusieurs projets), puis une ligne par tâche.
+function clientGroupHTML(g) {
+  if (g.tasks.length === 1) return cardHTML(g.tasks[0]);
+  const single = g.projects.length === 1;
+  const header = single ? `${g.client} · ${g.projects[0]}` : g.client;
+  return `
+    <section class="client-group rounded-lg bg-white border border-slate-200 shadow-sm overflow-hidden" data-lot="Lot 17" aria-label="${esc(header)}">
+      <p class="px-2.5 pt-2 pb-0.5 text-xs font-medium text-slate-500 truncate" title="${esc(header)}">${esc(header)}</p>
+      <div>${g.tasks.map((t, i) => `
+        <article class="card group relative ${taskSurface(t)} ${i ? 'border-t border-t-slate-100' : ''} p-2.5 cursor-grab active:cursor-grabbing hover:bg-slate-50/60 transition ${t.is_completed ? 'opacity-60' : ''}"
+                 draggable="true" data-id="${t.id}">${taskBodyHTML(t, single ? '' : taskProject(t))}
+        </article>`).join('')}
+      </div>
+    </section>`;
 }
 
 const taskComments = (taskId) => comments.filter((c) => c.task_id === taskId);
@@ -540,7 +573,7 @@ function meetingInput(form) {
 function render() {
   renderLabelPicker($('#add-form'));
   $('#board').innerHTML = DAYS.map((day) => {
-    const list = sortDay(tasks.filter((t) => t.day_of_week === day), labels);
+    const list = tasks.filter((t) => t.day_of_week === day);
     const total = list.reduce((s, t) => s + (+t.estimated_hours || 0), 0);
     return `
       <section class="col flex flex-col rounded-xl bg-slate-100/60 p-2 min-h-[200px] md:min-h-[60vh] transition" data-day="${day}">
@@ -548,7 +581,7 @@ function render() {
           <h2 class="text-sm font-semibold">${day}</h2>
           <span class="text-xs font-medium text-slate-500 tabular-nums" data-total="${day}">${fmtH(total)}</span>
         </div>
-        <div class="flex flex-col gap-2 flex-1">${list.map(cardHTML).join('')}</div>
+        <div class="flex flex-col gap-2 flex-1">${groupDay(list, labels).map(clientGroupHTML).join('')}</div>
       </section>`;
   }).join('');
 
@@ -604,10 +637,13 @@ function folderHTML(p, { showClient }) {
     <li class="folder bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing" data-lot="Lot 3"
         draggable="true" data-folder="${p.id}">
       <div class="flex items-start gap-1">
-        <button class="min-w-0 flex-1 text-left" data-open="${p.id}" title="Détail du projet">
-          <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
-          ${[showClient && p.clients.name, p.type].filter(Boolean).length
-            ? `<span class="block text-xs text-slate-500 truncate">${esc([showClient && p.clients.name, p.type].filter(Boolean).join(' · '))}</span>` : ''}
+        <button class="min-w-0 flex-1 flex items-center gap-2 text-left" data-open="${p.id}" title="Détail du projet">
+          ${showClient ? logoHTML(clients.find((c) => c.id === p.client_id) || p.clients, 'w-8 h-8 shrink-0') : ''}
+          <span class="min-w-0 flex-1" data-lot="Lot 17">
+            ${[showClient && p.clients.name, p.type].filter(Boolean).length
+              ? `<span class="block text-xs text-slate-500 truncate">${esc([showClient && p.clients.name, p.type].filter(Boolean).join(' · '))}</span>` : ''}
+            <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
+          </span>
         </button>
         ${projectPendingHTML(p)}
         <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"

@@ -765,3 +765,44 @@ describe('duplicateRow', () => {
     assert.deepEqual(original.label_ids, ['L3']);
   });
 });
+
+describe('groupDay', () => {
+  const labels = [{ id: 'meet', name: 'Réunion', color: 'bleu', is_meeting: true, position: 1 }];
+  const withClient = (over, clientId, clientName, projectName) => task({
+    ...over, client_name: clientName, project_name: projectName,
+    projects: { id: `p-${projectName}`, name: projectName, clients: { id: clientId, name: clientName } },
+  });
+
+  test('regroupe par client ; projets distincts listés ; ordre d’apparition sans réunion', () => {
+    const list = [
+      withClient({ id: 'a' }, 'c1', 'Acme', 'Site'),
+      withClient({ id: 'b' }, 'c2', 'Globex', 'Intranet'),
+      withClient({ id: 'c' }, 'c1', 'Acme', 'Logo'),
+      withClient({ id: 'd' }, 'c1', 'Acme', 'Site'),
+    ];
+    const groups = L.groupDay(list, labels);
+    assert.deepEqual(groups.map((g) => [g.client, g.projects, g.tasks.map((t) => t.id)]), [
+      ['Acme', ['Site', 'Logo'], ['a', 'c', 'd']],
+      ['Globex', ['Intranet'], ['b']],
+    ]);
+  });
+
+  test('le groupe qui a la réunion la plus tôt passe en tête ; dans un groupe, réunions par heure d’abord', () => {
+    const list = [
+      withClient({ id: 'a' }, 'c1', 'Acme', 'Site'),
+      withClient({ id: 'm2', label_ids: ['meet'], start_time: '15:00' }, 'c1', 'Acme', 'Site'),
+      withClient({ id: 'b' }, 'c2', 'Globex', 'Intranet'),
+      withClient({ id: 'm1', label_ids: ['meet'], start_time: '09:00' }, 'c3', 'Initech', 'Audit'),
+    ];
+    const groups = L.groupDay(list, labels);
+    assert.deepEqual(groups.map((g) => g.client), ['Initech', 'Acme', 'Globex']);
+    assert.deepEqual(groups[1].tasks.map((t) => t.id), ['m2', 'a']);
+  });
+
+  test('sans projet joint : regroupement sur le nom du client (casse ignorée)', () => {
+    const list = [task({ id: 'x', client_name: 'Acme', project_name: 'Site' }), task({ id: 'y', client_name: 'acme ', project_name: 'Site' })];
+    const groups = L.groupDay(list, labels);
+    assert.equal(groups.length, 1);
+    assert.deepEqual(groups[0].tasks.map((t) => t.id), ['x', 'y']);
+  });
+});

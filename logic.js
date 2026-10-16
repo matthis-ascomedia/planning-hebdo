@@ -101,6 +101,28 @@
       .concat(tasks.filter((t) => !timed(t)));
   }
 
+  // Colonne d'un jour regroupée par client : un groupe par client (projets distincts listés), tâches
+  // triées par sortDay (réunions par heure d'abord). Le groupe qui a la réunion la plus tôt passe en tête,
+  // puis les autres dans l'ordre d'apparition de leur première tâche.
+  function groupDay(tasks, labels) {
+    const groups = new Map();
+    tasks.forEach((t) => {
+      const client = t.projects?.clients?.name ?? t.client_name ?? '';
+      const key = t.projects?.clients?.id ?? `n:${normalizeText(client)}`;
+      if (!groups.has(key)) groups.set(key, { key, client, projects: [], tasks: [] });
+      const g = groups.get(key);
+      const project = t.projects?.name ?? t.project_name ?? '';
+      if (!g.projects.includes(project)) g.projects.push(project);
+      g.tasks.push(t);
+    });
+    const firstMeeting = (g) => g.tasks.find((t) => t.start_time && isMeeting(t, labels))?.start_time ?? null;
+    return [...groups.values()]
+      .map((g, i) => ({ ...g, tasks: sortDay(g.tasks, labels), order: i }))
+      .map((g) => ({ ...g, at: firstMeeting(g) }))
+      .sort((a, b) => (a.at && b.at ? a.at.localeCompare(b.at) : a.at ? -1 : b.at ? 1 : 0) || a.order - b.order)
+      .map(({ order, at, ...g }) => g);
+  }
+
   function labelNameError(labels, id, name) {
     if (!String(name ?? '').trim()) return 'Le nom de l’étiquette est obligatoire.';
     return labels.some((l) => l.id !== id && same(l.name, name)) ? 'Cette étiquette existe déjà.' : '';
@@ -386,7 +408,7 @@
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
-    LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime,
+    LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
