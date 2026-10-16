@@ -141,18 +141,54 @@
   // « Nouvelle Semaine » : terminées -> historique ; les autres planifiées reviennent sur Lundi ;
   // les tâches du sas (sans jour) restent rangées. `keepIds` : tâches terminées gardées dans le
   // planning (commentaires non traités), traitées comme des tâches reportées. Ne modifie pas les tableaux reçus.
-  function newWeek(tasks, history, archivedAt, keepIds = []) {
+  // `stayIds` : occurrences de tâches récurrentes qui, non terminées, restent sur leur jour au lieu de Lundi.
+  function newWeek(tasks, history, archivedAt, keepIds = [], stayIds = []) {
     const kept = new Set(keepIds);
+    const stay = new Set(stayIds);
     const archived = (t) => t.is_completed && !kept.has(t.id);
+    const moves = (t) => t.day_of_week && !(stay.has(t.id) && !t.is_completed);
     const finished = tasks.filter(archived);
     const staying = tasks.filter((t) => !archived(t));
-    const moving = staying.filter((t) => t.day_of_week && t.day_of_week !== 'Lundi').length;
+    const moving = staying.filter((t) => moves(t) && t.day_of_week !== 'Lundi').length;
     return {
       finished: finished.length,
       moving,
       history: finished.map((t) => ({ ...t, archived_at: archivedAt })).concat(history),
-      tasks: staying.map((t) => (t.day_of_week ? { ...t, day_of_week: 'Lundi' } : t)),
+      tasks: staying.map((t) => (moves(t) ? { ...t, day_of_week: 'Lundi' } : t)),
     };
+  }
+
+  // ---- Tâches récurrentes (séries) ----
+  // Dates locales, à minuit. Lundi de la semaine qui commence : le lundi qui suit, ou ce lundi même.
+  const midnight = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const addDays = (date, n) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + n);
+  const comingMonday = (date) => addDays(midnight(date), (8 - date.getDay()) % 7);
+  // Lundi de la semaine planifiée en ce moment (le week-end, c'est déjà la suivante).
+  const planningMonday = (date) => ([0, 6].includes(date.getDay()) ? comingMonday(date) : addDays(midnight(date), 1 - date.getDay()));
+  const dayDate = (monday, day) => addDays(monday, DAYS.indexOf(day));
+
+  // Rang d'un jour dans son mois : 1 à 4, ou 5 pour un 5ᵉ (toujours le dernier).
+  const monthlyRank = (date) => Math.ceil(date.getDate() / 7);
+  const isLastOfMonth = (date) => addDays(date, 7).getMonth() !== date.getMonth();
+
+  // La série a-t-elle une occurrence dans la semaine du lundi `monday` ? (monthly_rank 5 = dernier du mois)
+  function matchesRule(series, monday) {
+    if (series.frequency === 'weekly') return true;
+    const date = dayDate(monday, series.day_of_week);
+    return series.monthly_rank === 5 ? isLastOfMonth(date) : monthlyRank(date) === series.monthly_rank;
+  }
+
+  // Séries à instancier pour la semaine du lundi `monday` : actives, règle satisfaite, et aucune
+  // occurrence encore active (planning ou sas) — pas de doublon, pas de rattrapage des semaines passées.
+  function dueOccurrences(series, activeTasks, monday) {
+    const busy = new Set(activeTasks.map((t) => t.recurrence_id).filter(Boolean));
+    return series.filter((s) => s.active && !busy.has(s.id) && matchesRule(s, monday));
+  }
+
+  const RANKS = { 1: '1ᵉʳ', 2: '2ᵉ', 3: '3ᵉ', 4: '4ᵉ', 5: 'dernier' };
+  function recurrenceLabel(series) {
+    const day = String(series.day_of_week || '').toLowerCase();
+    return series.frequency === 'weekly' ? `Chaque semaine, le ${day}` : `Le ${RANKS[series.monthly_rank]} ${day} du mois`;
   }
 
   // Instantané enregistré à « Nouvelle Semaine » (avant archivage) : tâches terminées archivées,
@@ -335,7 +371,8 @@
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
   return { DAYS, same, suggestProjects, projectSuggestions, typeSuggestions, typeNameError, moveItem,
-    LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+    LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime,
+    comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };

@@ -121,6 +121,16 @@
             <input name="meeting_url" autocomplete="off" aria-label="Lien du salon de visioconférence" placeholder="Lien du salon (Meet, Teams, Zoom…)"
               class="col-span-2 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
           </div>
+          <div data-recurrence-fields data-lot="Lot 15" class="col-span-2 sm:col-span-6 flex flex-wrap items-center gap-2">
+            <span class="text-xs text-slate-500">Répétition</span>
+            <select name="recurrence" aria-label="Répétition" class="px-2.5 py-1.5 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none">
+              <option value="">Aucune</option><option value="weekly">Chaque semaine</option><option value="monthly">Chaque mois</option>
+            </select>
+            <select name="monthly_rank" aria-label="Semaine du mois" class="hidden px-2.5 py-1.5 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none">
+              <option value="1">le 1ᵉʳ</option><option value="2">le 2ᵉ</option><option value="3">le 3ᵉ</option><option value="4">le 4ᵉ</option><option value="5">le dernier</option>
+            </select>
+            <span data-rank-day class="hidden text-sm text-slate-600"></span>
+          </div>
         </form>
 
         <div id="error" class="hidden mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
@@ -264,6 +274,14 @@
         </form>
         <p id="labels-error" class="hidden text-sm text-red-700"></p>
       </section>
+
+      <section class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3" aria-labelledby="recurrences-title" data-lot="Lot 15">
+        <div>
+          <h3 id="recurrences-title" class="text-sm font-semibold">Tâches récurrentes</h3>
+          <p class="text-xs text-slate-500 mt-0.5">« Nouvelle Semaine » crée l’occurrence de la semaine qui commence, sauf si la précédente est encore dans le planning ou le sas. Pour modifier une série, ouvre l’une de ses occurrences.</p>
+        </div>
+        <ul id="recurrences-list" class="divide-y divide-slate-100"></ul>
+      </section>
     </div>
 
     <!-- Page Archives : projets terminés -->
@@ -306,6 +324,19 @@
             <input name="start_time" type="time" aria-label="Heure de la réunion" class="col-span-1 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
             <input name="meeting_url" autocomplete="off" aria-label="Lien du salon de visioconférence" placeholder="Lien du salon (Meet, Teams, Zoom…)"
               class="col-span-2 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          </div>
+          <div data-recurrence-fields data-lot="Lot 15" class=" flex flex-wrap items-center gap-2">
+            <span class="text-xs text-slate-500">Répétition</span>
+            <select name="recurrence" aria-label="Répétition" class="px-2.5 py-1.5 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none">
+              <option value="">Aucune</option><option value="weekly">Chaque semaine</option><option value="monthly">Chaque mois</option>
+            </select>
+            <select name="monthly_rank" aria-label="Semaine du mois" class="hidden px-2.5 py-1.5 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none">
+              <option value="1">le 1ᵉʳ</option><option value="2">le 2ᵉ</option><option value="3">le 3ᵉ</option><option value="4">le 4ᵉ</option><option value="5">le dernier</option>
+            </select>
+            <span data-rank-day class="hidden text-sm text-slate-600"></span>
+            <label data-apply-series class="hidden inline-flex items-center gap-1.5 text-xs text-slate-600">
+              <input type="checkbox" name="apply_series" class="chk" checked /> Appliquer aussi aux prochaines occurrences
+            </label>
           </div>
       <p id="edit-error" class="hidden text-sm text-red-700"></p>
       <div class="flex flex-wrap items-center justify-end gap-2 pt-1">

@@ -3,7 +3,8 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, typeSuggestions, typeNameError, moveItem,
-  LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime,
+  comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
@@ -21,6 +22,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.15.0', type: 'mineure', lot: 'Lot 15', date: '2026-10-16',
+    items: [
+      'Tâches récurrentes : chaque semaine, ou chaque mois (1ᵉʳ, 2ᵉ, 3ᵉ, 4ᵉ ou dernier jour donné du mois).',
+      '« Nouvelle Semaine » crée les occurrences de la semaine qui commence, sans doublon ; une occurrence non faite reste sur son jour.',
+      'Modifier une occurrence peut s’appliquer aux suivantes ; « Aucune » arrête la répétition. Liste des séries dans Réglages.',
+    ],
+  },
   {
     version: '1.14.0', type: 'mineure', lot: 'Lot 14', date: '2026-10-16',
     items: [
@@ -144,6 +153,7 @@ let comments = []; // commentaires des tâches (task_comments), archivées compr
 let weeks = []; // semaines closes par « Nouvelle Semaine » (instantanés)
 let projectTypes = []; // types de projet par défaut (Réglages), ordonnés par position
 let labels = []; // étiquettes de tâche (Réglages), ordonnées par position = priorité visuelle
+let recurrences = []; // séries de tâches récurrentes (règle + modèle)
 const openWeeks = new Set(); // fiches de semaine dépliées dans l'historique
 const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
 let showLinks = true;
@@ -223,6 +233,7 @@ const db = {
   listWeeks: () => api('weeks', '?select=*&order=closed_at.desc'),
   listTypes: () => api('project_types', '?select=*&order=position.asc'),
   listLabels: () => api('labels', '?select=*&order=position.asc'),
+  listRecurrences: () => api('recurrences', '?select=*&order=created_at.asc'),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -334,6 +345,70 @@ const tint = (l) => TINTS[l?.color] || TINTS.gris;
 const labelChipsHTML = (t) => taskLabels(t, labels).map((l) => `
   <span class="inline-flex items-center max-w-full truncate text-[11px] font-medium rounded px-1.5 py-0.5 ${tint(l).chip}">${esc(l.name)}</span>`).join('');
 
+// ---- Tâches récurrentes ----
+const activeSeriesOf = (t) => (t.recurrence_id ? recurrences.find((x) => x.id === t.recurrence_id && x.active) : null) ?? null;
+
+function recurrenceBadgeHTML(t) {
+  const series = activeSeriesOf(t);
+  if (!series) return '';
+  const label = recurrenceLabel(series);
+  return `<span class="inline-flex items-center text-[11px] font-medium text-slate-500 bg-white/70 border border-slate-200 rounded px-1.5 py-0.5"
+    title="${esc(label)}" aria-label="Tâche récurrente : ${esc(label)}" data-lot="Lot 15">↻</span>`;
+}
+
+// Champs « Répétition » : rang du mois visible en mensuel, prérempli d'après le jour choisi.
+function syncRecurrenceFields(form, { prefill = false } = {}) {
+  const monthly = form.recurrence.value === 'monthly';
+  const day = form.day_of_week.value;
+  form.monthly_rank.classList.toggle('hidden', !monthly);
+  const dayText = form.querySelector('[data-rank-day]');
+  dayText.classList.toggle('hidden', !monthly);
+  dayText.textContent = day ? `${day.toLowerCase()} du mois` : 'jour du mois';
+  if (monthly && prefill && day) {
+    const rank = monthlyRank(dayDate(planningMonday(new Date()), day));
+    form.monthly_rank.value = String(Math.min(rank, 5));
+  }
+}
+
+document.addEventListener('change', (e) => {
+  const form = e.target.form;
+  if (!form?.querySelector?.('[data-recurrence-fields]')) return;
+  if (e.target.name === 'recurrence' || e.target.name === 'day_of_week') syncRecurrenceFields(form, { prefill: true });
+});
+
+// Règle saisie dans un formulaire ; null si « Aucune ». Une tâche récurrente doit avoir un jour.
+function recurrenceInput(form) {
+  const frequency = form.recurrence.value;
+  if (!frequency) return null;
+  if (!form.day_of_week.value) throw new Error('Une tâche récurrente doit être planifiée sur un jour (pas dans le sas).');
+  return { frequency, monthly_rank: frequency === 'monthly' ? Number(form.monthly_rank.value) : null, day_of_week: form.day_of_week.value };
+}
+
+async function createSeries(rule, template) {
+  const [series] = await api('recurrences', '', { method: 'POST', body: { ...rule, ...template, active: true }, prefer: 'return=representation' });
+  recurrences.push(series);
+  return series;
+}
+
+// Ligne d'occurrence à créer pour une série (noms client / projet repris du projet actuel).
+function occurrenceRow(series) {
+  const project = projects.find((p) => p.id === series.project_id);
+  if (!project) return null;
+  return {
+    project_id: project.id,
+    client_name: project.clients.name,
+    project_name: project.name,
+    task_name: series.task_name,
+    estimated_hours: series.estimated_hours,
+    day_of_week: series.day_of_week,
+    is_completed: false,
+    label_ids: series.label_ids ?? [],
+    start_time: series.start_time ?? null,
+    meeting_url: series.meeting_url ?? null,
+    recurrence_id: series.id,
+  };
+}
+
 function cardHTML(t) {
   const done = t.is_completed;
   const main = primaryLabel(t, labels);
@@ -365,6 +440,7 @@ function cardHTML(t) {
       <div class="mt-2 flex flex-wrap items-center gap-1.5">
         <span class="inline-block text-[11px] font-medium text-slate-600 bg-white/70 border border-slate-200 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
         ${labelChipsHTML(t)}
+        ${recurrenceBadgeHTML(t)}
         ${commentBadgeHTML(t)}
       </div>
       ${showLinks ? cardLinksHTML(t) : ''}
@@ -421,8 +497,8 @@ function renderLabelPicker(form, selected = formLabels(form)) {
     <label class="cursor-pointer">
       <input type="checkbox" name="label" value="${l.id}" class="peer sr-only" ${selected.includes(l.id) ? 'checked' : ''} />
       <span class="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition
-        hover:border-slate-300 peer-checked:border-transparent ${tint(l).on} peer-focus-visible:ring-2 peer-focus-visible:ring-slate-400">
-        <span class="w-2 h-2 rounded-full ${tint(l).dot}"></span>${esc(l.name)}
+        hover:border-slate-300 peer-checked:border-transparent ${tint(l).on} peer-focus-visible:ring-2 peer-focus-visible:ring-slate-400 peer-checked:[&>.mark]:inline">
+        <span class="w-2 h-2 rounded-full ${tint(l).dot}"></span>${esc(l.name)}<span class="mark hidden" aria-hidden="true">✓</span>
       </span>
     </label>`).join('') : '';
   syncMeetingFields(form);
@@ -492,7 +568,7 @@ function parkedHTML(t) {
     <article class="card group flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5 cursor-grab active:cursor-grabbing hover:border-slate-300 transition"
              draggable="true" data-id="${t.id}">
       <p class="min-w-0 flex-1 text-sm break-words ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}
-        ${taskLabels(t, labels).length ? `<span class="mt-0.5 flex flex-wrap gap-1">${labelChipsHTML(t)}</span>` : ''}</p>
+        ${taskLabels(t, labels).length || activeSeriesOf(t) ? `<span class="mt-0.5 flex flex-wrap items-center gap-1">${labelChipsHTML(t)}${recurrenceBadgeHTML(t)}</span>` : ''}</p>
       <span class="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
       <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-slate-700 text-sm leading-none transition"
               data-edit="${t.id}" title="Modifier" aria-label="Modifier">✎</button>
@@ -667,7 +743,11 @@ $('#add-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
   let meeting;
-  try { meeting = meetingInput(f); } catch (ex) { showError(ex.message); return; }
+  let recurrence;
+  try {
+    meeting = meetingInput(f);
+    recurrence = recurrenceInput(f);
+  } catch (ex) { showError(ex.message); return; }
   const draft = {
     client: f.client_name.value,
     project: f.project_name.value,
@@ -677,6 +757,7 @@ $('#add-form').addEventListener('submit', (e) => {
     label_ids: formLabels(f),
     start_time: meeting?.start_time ?? null,
     meeting_url: meeting?.meeting_url ?? null,
+    recurrence,
   };
   // Tâche ajoutée directement dans le sas : on demande dans quel projet la ranger.
   if (!draft.day_of_week) return openAssign(draft);
@@ -693,11 +774,22 @@ function resetAddForm() {
   f.start_time.value = '';
   f.meeting_url.value = '';
   renderLabelPicker(f, []);
+  f.recurrence.value = '';
+  syncRecurrenceFields(f);
   f.task_name.focus();
 }
 
 async function createTask(project, draft) {
+  const series = draft.recurrence ? await createSeries(draft.recurrence, {
+    project_id: project.id,
+    task_name: draft.task_name,
+    estimated_hours: draft.estimated_hours,
+    label_ids: draft.label_ids ?? [],
+    start_time: draft.start_time ?? null,
+    meeting_url: draft.meeting_url ?? null,
+  }) : null;
   const [created] = await db.insert({
+    recurrence_id: series?.id ?? null,
     project_id: project.id,
     client_name: project.clients.name,
     project_name: project.name,
@@ -887,7 +979,8 @@ async function deleteTaskForever(id) {
   const n = taskComments(id).length;
   const ok = await askConfirm({
     title: 'Supprimer définitivement la tâche ?',
-    message: `« ${t.task_name} » sera supprimée${n > 1 ? ` avec ses ${n} commentaires` : n ? ' avec son commentaire' : ''}. Cette action est irréversible.`,
+    message: `« ${t.task_name} » sera supprimée${n > 1 ? ` avec ses ${n} commentaires` : n ? ' avec son commentaire' : ''}. Cette action est irréversible.`
+      + (activeSeriesOf(t) ? '\nLa répétition continue : une nouvelle occurrence sera créée à la prochaine semaine concernée. Pour l’arrêter : Réglages › Tâches récurrentes.' : ''),
     confirmLabel: 'Supprimer',
     danger: true,
   });
@@ -985,10 +1078,15 @@ function prefillAdd(project, day) {
 // Archive les tâches terminées (sauf `keepIds`, gardées dans le planning) et ramène le reste sur Lundi.
 // La semaine n'est enregistrée (instantané + rattachement des tâches) que si au moins une tâche est archivée.
 function startNewWeek(keepIds = []) {
-  const archivedAt = new Date().toISOString();
+  const now = new Date();
+  const archivedAt = now.toISOString();
   const stats = weekSnapshot(tasks, keepIds);
-  const next = newWeek(tasks, history, archivedAt, keepIds);
+  // Occurrences récurrentes non terminées : elles restent sur leur jour.
+  const stayIds = tasks.filter((t) => !t.is_completed && t.day_of_week && activeSeriesOf(t)).map((t) => t.id);
+  const next = newWeek(tasks, history, archivedAt, keepIds, stayIds);
+  const due = dueOccurrences(recurrences, next.tasks, comingMonday(now)).map(occurrenceRow).filter(Boolean);
   const keep = keepIds.length ? `&id=not.in.(${keepIds.join(',')})` : '';
+  const stay = stayIds.length ? `&id=not.in.(${stayIds.join(',')})` : '';
   const snapshot = { tasks, history, weeks };
   ({ tasks, history } = next);
   render();
@@ -1008,12 +1106,21 @@ function startNewWeek(keepIds = []) {
         render();
       }
       if (next.moving) {
-        await api('tasks', '?is_completed=eq.false&archived_at=is.null&day_of_week=not.is.null', { method: 'PATCH', body: { day_of_week: 'Lundi' } });
+        await api('tasks', `?is_completed=eq.false&archived_at=is.null&day_of_week=not.is.null${stay}`, { method: 'PATCH', body: { day_of_week: 'Lundi' } });
         if (keepIds.length) {
           await api('tasks', `?id=in.(${keepIds.join(',')})&day_of_week=not.is.null`, { method: 'PATCH', body: { day_of_week: 'Lundi' } });
         }
       }
-      if (keepIds.length) toast(`${keepIds.length} tâche${keepIds.length > 1 ? 's' : ''} gardée${keepIds.length > 1 ? 's' : ''} dans le planning`);
+      if (due.length) {
+        const created = await db.insert(due);
+        tasks = tasks.concat(created);
+        render();
+      }
+      const notes = [
+        keepIds.length && `${keepIds.length} tâche${keepIds.length > 1 ? 's' : ''} gardée${keepIds.length > 1 ? 's' : ''} dans le planning`,
+        due.length && `${due.length} tâche${due.length > 1 ? 's' : ''} récurrente${due.length > 1 ? 's' : ''} ajoutée${due.length > 1 ? 's' : ''}`,
+      ].filter(Boolean);
+      if (notes.length) toast(notes.join(' · '));
     },
     () => { ({ tasks, history, weeks } = snapshot); }
   );
@@ -1111,6 +1218,12 @@ function openEdit(id) {
   editForm.start_time.value = t.start_time ?? '';
   editForm.meeting_url.value = t.meeting_url ?? '';
   renderLabelPicker(editForm, t.label_ids ?? []);
+  const series = activeSeriesOf(t);
+  editForm.recurrence.value = series?.frequency ?? '';
+  editForm.monthly_rank.value = String(series?.monthly_rank ?? 1);
+  editForm.apply_series.checked = true;
+  editForm.querySelector('[data-apply-series]').classList.toggle('hidden', !series);
+  syncRecurrenceFields(editForm, { prefill: !series });
   $('#edit-error').classList.add('hidden');
   editDialog.showModal();
   editForm.task_name.focus();
@@ -1132,8 +1245,10 @@ editForm.addEventListener('submit', async (e) => {
   try {
     // Sans étiquette « réunion », l'heure et le lien déjà saisis sont conservés (masqués).
     const meeting = meetingInput(f);
+    const rule = recurrenceInput(f);
+    const t = tasks.find((x) => x.id === f.dataset.id);
     const project = await ensureProject(f.client_name.value, f.project_name.value);
-    const updated = await db.updateFull(f.dataset.id, {
+    const fields = {
       label_ids: formLabels(f),
       ...(meeting || {}),
       project_id: project.id,
@@ -1142,7 +1257,30 @@ editForm.addEventListener('submit', async (e) => {
       task_name: f.task_name.value.trim(),
       estimated_hours: parseFloat(f.estimated_hours.value) || 0,
       day_of_week: f.day_of_week.value || null,
-    });
+    };
+    // Modèle de série = la tâche telle qu'enregistrée (heure et lien conservés s'ils sont masqués).
+    const template = {
+      project_id: fields.project_id,
+      task_name: fields.task_name,
+      estimated_hours: fields.estimated_hours,
+      label_ids: fields.label_ids,
+      start_time: fields.start_time ?? t.start_time ?? null,
+      meeting_url: fields.meeting_url ?? t.meeting_url ?? null,
+    };
+    const series = activeSeriesOf(t);
+    if (!series && rule) {
+      fields.recurrence_id = (await createSeries(rule, template)).id;
+    } else if (series && !rule) { // « Aucune » : la répétition s'arrête, l'occurrence reste
+      await api('recurrences', `?id=eq.${series.id}`, { method: 'PATCH', body: { active: false } });
+      series.active = false;
+    } else if (series && rule) {
+      const patch = f.apply_series.checked
+        ? { ...rule, ...template }
+        : { frequency: rule.frequency, monthly_rank: rule.monthly_rank };
+      await api('recurrences', `?id=eq.${series.id}`, { method: 'PATCH', body: patch });
+      Object.assign(series, patch);
+    }
+    const updated = await db.updateFull(f.dataset.id, fields);
     tasks = tasks.map((x) => (x.id === updated.id ? updated : x));
     editDialog.close();
     render();
@@ -1671,8 +1809,40 @@ function fillTypeList() {
 const typeUsage = (name) => projects.filter((p) => p.type && same(p.type, name)).length;
 const ICON_BTN = 'w-7 h-7 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition';
 
+function renderRecurrencesSettings() {
+  const active = recurrences.filter((x) => x.active);
+  $('#recurrences-list').innerHTML = active.map((x) => {
+    const p = projects.find((pr) => pr.id === x.project_id);
+    return `
+      <li class="flex flex-wrap items-center gap-2 py-2 text-sm">
+        <span class="min-w-0 flex-1 basis-48">
+          <span class="block truncate font-medium">↻ ${esc(x.task_name)}</span>
+          <span class="block truncate text-xs text-slate-500">${esc(recurrenceLabel(x))}${p ? ` · ${esc(p.clients.name)} · ${esc(p.name)}` : ''}</span>
+        </span>
+        <button type="button" data-stop-series="${x.id}"
+          class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Ne plus répéter</button>
+      </li>`;
+  }).join('') || '<li class="py-2 text-sm text-slate-400">Aucune tâche récurrente.</li>';
+}
+
+$('#recurrences-list').addEventListener('click', async (e) => {
+  const id = e.target.closest('[data-stop-series]')?.dataset.stopSeries;
+  if (!id) return;
+  const x = recurrences.find((y) => y.id === id);
+  const ok = await askConfirm({
+    title: `Ne plus répéter « ${x.task_name} » ?`,
+    message: 'Aucune nouvelle occurrence ne sera créée. Les occurrences déjà présentes dans le planning ou le sas restent en place.',
+    confirmLabel: 'Ne plus répéter',
+  });
+  if (!ok) return;
+  x.active = false;
+  render();
+  run(() => api('recurrences', `?id=eq.${id}`, { method: 'PATCH', body: { active: false } }), () => { x.active = true; });
+});
+
 function renderSettings() {
   renderLabelsSettings();
+  renderRecurrencesSettings();
   const list = [...projectTypes].sort((a, b) => a.position - b.position);
   $('#types-list').innerHTML = list.map((t, i) => {
     const n = typeUsage(t.name);
@@ -1947,6 +2117,9 @@ const TOURS = {
       { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
         title: 'Étiquettes et réunions',
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },
+      { id: 'recurrence', targetSelector: '#add-form [data-recurrence-fields]', placement: 'bottom', lot: 'Lot 15',
+        title: 'Tâches récurrentes',
+        content: 'Choisis « Chaque semaine » ou « Chaque mois » (ex. le 1ᵉʳ mardi) : « Nouvelle Semaine » recréera la tâche quand il le faut. Une occurrence non faite reste sur son jour. Les séries se retrouvent dans Réglages.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
         content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
@@ -2120,6 +2293,7 @@ $('#logout').addEventListener('click', () => {
   weeks = [];
   projectTypes = [];
   labels = [];
+  recurrences = [];
   openComments.clear();
   openWeeks.clear();
   setAuthed(false);
@@ -2130,9 +2304,9 @@ async function start() {
   setAuthed(true);
   render();
   await run(async () => {
-    [clients, projects, tasks, history, links, comments, weeks, projectTypes, labels] = await Promise.all([
+    [clients, projects, tasks, history, links, comments, weeks, projectTypes, labels, recurrences] = await Promise.all([
       db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(), db.listWeeks(),
-      db.listTypes(), db.listLabels(),
+      db.listTypes(), db.listLabels(), db.listRecurrences(),
     ]);
     render();
   });

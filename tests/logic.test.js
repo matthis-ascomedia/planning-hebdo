@@ -661,3 +661,79 @@ describe('parseTime', () => {
     assert.throws(() => L.parseTime('midi'), /Heure invalide/);
   });
 });
+
+describe('récurrences : dates', () => {
+  const d = (s) => new Date(`${s}T10:00:00`);
+  const iso = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+  test('comingMonday : le lundi qui suit, ou ce lundi même', () => {
+    assert.equal(iso(L.comingMonday(d('2026-10-16'))), '2026-10-19'); // vendredi
+    assert.equal(iso(L.comingMonday(d('2026-10-19'))), '2026-10-19'); // lundi
+    assert.equal(iso(L.comingMonday(d('2026-10-18'))), '2026-10-19'); // dimanche
+    assert.equal(iso(L.comingMonday(d('2026-12-29'))), '2027-01-04'); // changement d'année
+  });
+
+  test('planningMonday : lundi de la semaine en cours (le week-end : la suivante)', () => {
+    assert.equal(iso(L.planningMonday(d('2026-10-14'))), '2026-10-12'); // mercredi
+    assert.equal(iso(L.planningMonday(d('2026-10-17'))), '2026-10-19'); // samedi
+  });
+
+  test('dayDate : date d’un jour du planning dans la semaine', () => {
+    assert.equal(iso(L.dayDate(d('2026-10-19'), 'Mardi')), '2026-10-20');
+    assert.equal(iso(L.dayDate(d('2026-10-26'), 'Vendredi')), '2026-10-30');
+  });
+
+  test('monthlyRank : rang du jour dans le mois (5 = dernier)', () => {
+    assert.equal(L.monthlyRank(d('2026-10-06')), 1); // 1er mardi
+    assert.equal(L.monthlyRank(d('2026-10-20')), 3);
+    assert.equal(L.monthlyRank(d('2026-10-29')), 5); // 5e jeudi = dernier
+  });
+
+  test('isLastOfMonth', () => {
+    assert.equal(L.isLastOfMonth(d('2026-10-27')), true); // dernier mardi d'octobre
+    assert.equal(L.isLastOfMonth(d('2026-10-20')), false);
+  });
+});
+
+describe('récurrences : règles', () => {
+  const weekly = { id: 's1', frequency: 'weekly', day_of_week: 'Mardi', active: true };
+  const firstTue = { id: 's2', frequency: 'monthly', monthly_rank: 1, day_of_week: 'Mardi', active: true };
+  const lastFri = { id: 's3', frequency: 'monthly', monthly_rank: 5, day_of_week: 'Vendredi', active: true };
+  const mon = (s) => new Date(`${s}T00:00:00`);
+
+  test('matchesRule : hebdomadaire toujours ; mensuelle selon le rang', () => {
+    assert.equal(L.matchesRule(weekly, mon('2026-10-19')), true);
+    assert.equal(L.matchesRule(firstTue, mon('2026-11-02')), true); // mardi 3 nov.
+    assert.equal(L.matchesRule(firstTue, mon('2026-10-19')), false); // mardi 20 oct. = 3e
+    assert.equal(L.matchesRule(lastFri, mon('2026-10-26')), true); // vendredi 30 oct.
+    assert.equal(L.matchesRule(lastFri, mon('2026-10-19')), false);
+  });
+
+  test('dueOccurrences : séries actives, règle satisfaite, sans occurrence encore active', () => {
+    const series = [weekly, firstTue, { ...weekly, id: 's4', active: false }, { ...weekly, id: 's5' }];
+    const active = [{ id: 't', recurrence_id: 's5', day_of_week: null }]; // occurrence de s5 rangée dans le sas
+    assert.deepEqual(L.dueOccurrences(series, active, mon('2026-11-02')).map((s) => s.id), ['s1', 's2']);
+    assert.deepEqual(L.dueOccurrences(series, active, mon('2026-10-19')).map((s) => s.id), ['s1']);
+  });
+
+  test('recurrenceLabel', () => {
+    assert.equal(L.recurrenceLabel(weekly), 'Chaque semaine, le mardi');
+    assert.equal(L.recurrenceLabel(firstTue), 'Le 1ᵉʳ mardi du mois');
+    assert.equal(L.recurrenceLabel({ ...firstTue, monthly_rank: 3 }), 'Le 3ᵉ mardi du mois');
+    assert.equal(L.recurrenceLabel(lastFri), 'Le dernier vendredi du mois');
+  });
+});
+
+describe('newWeek (occurrences récurrentes)', () => {
+  test('une occurrence récurrente non terminée reste sur son jour', () => {
+    const res = L.newWeek([task({ id: 'r', day_of_week: 'Jeudi' }), task({ id: 'n', day_of_week: 'Jeudi' })], [], 'x', [], ['r']);
+    assert.deepEqual(res.tasks.map((t) => [t.id, t.day_of_week]), [['r', 'Jeudi'], ['n', 'Lundi']]);
+    assert.equal(res.moving, 1);
+  });
+
+  test('terminée, elle est archivée normalement', () => {
+    const res = L.newWeek([task({ id: 'r', is_completed: true, day_of_week: 'Jeudi' })], [], 'x', [], ['r']);
+    assert.equal(res.finished, 1);
+    assert.deepEqual(res.tasks, []);
+  });
+});
