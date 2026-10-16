@@ -544,3 +544,56 @@ describe('projectSuggestions', () => {
     assert.deepEqual(L.projectSuggestions(list, 'Initech').map((s) => s.label), ['', '', '', '']);
   });
 });
+
+describe('typeSuggestions', () => {
+  const types = [{ id: 't2', name: 'Print', position: 2 }, { id: 't1', name: 'Site web', position: 1 }];
+  const projects = [
+    { id: 'p1', type: 'Site web' },
+    { id: 'p2', type: 'Podcast' },
+    { id: 'p3', type: 'podcast' },
+    { id: 'p4', type: 'Événementiel' },
+    { id: 'p5', type: null },
+    { id: 'p6', type: 'site WEB' },
+  ];
+
+  test('types par défaut dans leur ordre, puis personnalisés (triés, sans doublon)', () => {
+    const res = L.typeSuggestions(types, projects);
+    assert.deepEqual(res.map((t) => [t.name, t.custom]), [
+      ['Site web', false], ['Print', false], ['Événementiel', true], ['Podcast', true],
+    ]);
+  });
+
+  test('sans types ni projets', () => {
+    assert.deepEqual(L.typeSuggestions([], []), []);
+  });
+});
+
+describe('typeNameError', () => {
+  const types = [{ id: 't1', name: 'Site web' }];
+  test('vide, doublon (casse ignorée), ou valide', () => {
+    assert.match(L.typeNameError(types, null, ' '), /obligatoire/);
+    assert.match(L.typeNameError(types, null, 'SITE WEB'), /existe déjà/);
+    assert.equal(L.typeNameError(types, 't1', 'Site Web'), '');
+    assert.equal(L.typeNameError(types, null, 'Vidéo'), '');
+  });
+});
+
+describe('moveItem', () => {
+  const list = [{ id: 'a', position: 1 }, { id: 'b', position: 2 }, { id: 'c', position: 3 }];
+
+  test('monte ou descend un élément et renumérote les positions', () => {
+    assert.deepEqual(L.moveItem(list, 'c', -1).map((x) => [x.id, x.position]), [['a', 1], ['c', 2], ['b', 3]]);
+    assert.deepEqual(L.moveItem(list, 'a', 1).map((x) => x.id), ['b', 'a', 'c']);
+  });
+
+  test('aux extrémités, rien ne bouge ; liste d’origine intacte', () => {
+    assert.deepEqual(L.moveItem(list, 'a', -1).map((x) => x.id), ['a', 'b', 'c']);
+    assert.deepEqual(L.moveItem(list, 'c', 1).map((x) => x.id), ['a', 'b', 'c']);
+    assert.deepEqual(list.map((x) => x.position), [1, 2, 3]);
+  });
+
+  test('l’ordre de départ suit la position, pas l’ordre du tableau', () => {
+    const shuffled = [list[2], list[0], list[1]];
+    assert.deepEqual(L.moveItem(shuffled, 'b', -1).map((x) => x.id), ['b', 'a', 'c']);
+  });
+});

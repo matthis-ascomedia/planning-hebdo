@@ -48,6 +48,37 @@
     return groups.flat().filter((s) => !seen.has(s.value.toLowerCase()) && seen.add(s.value.toLowerCase()));
   }
 
+  // Types de projet proposés : ceux par défaut (Réglages) dans leur ordre, puis les types personnalisés
+  // saisis sur des projets (absents des défauts), triés et sans doublon (casse ignorée).
+  function typeSuggestions(types, projects) {
+    const defaults = [...types].sort((a, b) => a.position - b.position).map((t) => ({ name: t.name, custom: false }));
+    const seen = new Set(defaults.map((t) => normalizeText(t.name)));
+    const custom = [];
+    projects.forEach((p) => {
+      const name = String(p.type ?? '').trim();
+      if (!name || seen.has(normalizeText(name))) return;
+      seen.add(normalizeText(name));
+      custom.push({ name, custom: true });
+    });
+    return defaults.concat(custom.sort((a, b) => a.name.localeCompare(b.name)));
+  }
+
+  // Message d'erreur pour un nom de type par défaut (vide, ou déjà pris) ; '' si valide.
+  function typeNameError(types, id, name) {
+    if (!String(name ?? '').trim()) return 'Le nom du type est obligatoire.';
+    return types.some((t) => t.id !== id && same(t.name, name)) ? 'Ce type existe déjà.' : '';
+  }
+
+  // Déplace un élément d'un cran (dir = -1 vers le haut, +1 vers le bas) dans une liste ordonnée par
+  // `position` ; renvoie une nouvelle liste renumérotée 1..n (les objets reçus ne sont pas modifiés).
+  function moveItem(list, id, dir) {
+    const sorted = [...list].sort((a, b) => a.position - b.position);
+    const i = sorted.findIndex((x) => x.id === id);
+    const j = i + dir;
+    if (i >= 0 && j >= 0 && j < sorted.length) [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
+    return sorted.map((x, k) => ({ ...x, position: k + 1 }));
+  }
+
   // Tâches d'un projet rangées dans le sas (pas de jour).
   const parkedTasks = (tasks, projectId) => tasks.filter((t) => t.project_id === projectId && !t.day_of_week);
 
@@ -265,7 +296,7 @@
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
-  return { DAYS, same, suggestProjects, projectSuggestions, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  return { DAYS, same, suggestProjects, projectSuggestions, typeSuggestions, typeNameError, moveItem, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };

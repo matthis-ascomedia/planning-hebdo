@@ -2,7 +2,7 @@ const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
-const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, typeSuggestions, typeNameError, moveItem, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
@@ -20,6 +20,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.13.0', type: 'mineure', lot: 'Lot 13', date: '2026-10-16',
+    items: [
+      'Nouvel onglet Réglages : types de projet par défaut (ajout, renommage, ordre, suppression).',
+      'Chaque projet peut recevoir un type : les types par défaut sont proposés avant les types personnalisés.',
+      'Le type s’affiche dans le sas, la fiche client et la recherche rapide.',
+    ],
+  },
   {
     version: '1.12.0', type: 'mineure', lot: 'Lot 12', date: '2026-10-16',
     items: [
@@ -125,6 +133,7 @@ let clients = [];
 let links = []; // liens d'accès rapide des projets (project_links)
 let comments = []; // commentaires des tâches (task_comments), archivées comprises
 let weeks = []; // semaines closes par « Nouvelle Semaine » (instantanés)
+let projectTypes = []; // types de projet par défaut (Réglages), ordonnés par position
 const openWeeks = new Set(); // fiches de semaine dépliées dans l'historique
 const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
 let showLinks = true;
@@ -202,6 +211,7 @@ const db = {
   listLinks: () => api('project_links', '?select=*&order=created_at.asc'),
   listComments: () => api('task_comments', '?select=*&order=created_at.asc'),
   listWeeks: () => api('weeks', '?select=*&order=closed_at.desc'),
+  listTypes: () => api('project_types', '?select=*&order=position.asc'),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -387,6 +397,7 @@ function render() {
   renderArchives();
   renderHistory();
   renderClients();
+  renderSettings();
   $('#clients-list').innerHTML = clients.map((c) => `<option value="${esc(c.name)}"></option>`).join('');
   fillProjectList($('#add-form').client_name.value);
 }
@@ -430,7 +441,8 @@ function folderHTML(p, { showClient }) {
       <div class="flex items-start gap-1">
         <button class="min-w-0 flex-1 text-left" data-open="${p.id}" title="Détail du projet">
           <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
-          ${showClient ? `<span class="block text-xs text-slate-500 truncate">${esc(p.clients.name)}</span>` : ''}
+          ${[showClient && p.clients.name, p.type].filter(Boolean).length
+            ? `<span class="block text-xs text-slate-500 truncate">${esc([showClient && p.clients.name, p.type].filter(Boolean).join(' · '))}</span>` : ''}
         </button>
         ${projectPendingHTML(p)}
         <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"
@@ -490,7 +502,7 @@ function renderSasResults() {
   const tag = (t, cls = 'bg-slate-100 text-slate-600') => `<span class="shrink-0 text-[11px] font-medium ${cls} rounded px-1.5 py-0.5">${t}</span>`;
   box.innerHTML = n
     ? hits.clients.map((c) => row('data-result-client', c.id, c.name, c.website ? hostOf(c.website) : 'Fiche client', tag('Client'))).join('')
-      + hits.projects.map((p) => row('data-result-project', p.id, p.name, `${p.clients.name}${p.year ? ` · ${p.year}` : ''}`,
+      + hits.projects.map((p) => row('data-result-project', p.id, p.name, [p.clients.name, p.type, p.year].filter(Boolean).join(' · '),
         p.status === 'termine' ? tag('Terminé') : tag('Projet', 'bg-emerald-50 text-emerald-700'))).join('')
     : '<li class="px-2.5 py-2 text-sm text-slate-400">Aucun client ni projet trouvé.</li>';
 }
@@ -562,7 +574,7 @@ function renderArchives() {
 }
 
 // Navigation par onglets (hash) : une vue #<nom>-view par onglet.
-const ROUTES = ['planning', 'history', 'clients', 'archives'];
+const ROUTES = ['planning', 'history', 'clients', 'archives', 'settings'];
 const currentRoute = () => routeOf(location.hash, ROUTES);
 
 function route() {
@@ -1092,6 +1104,8 @@ function openProject(id, { keepForm = false } = {}) {
   if (!keepForm) {
     projectEditForm.project_name.value = p.name;
     projectEditForm.year.value = p.year ?? '';
+    projectEditForm.type.value = p.type ?? '';
+    fillTypeList();
     projectEditForm.quote_label.value = p.quote_label ?? '';
     projectEditForm.quote_url.value = p.quote_url ?? '';
     $('#project-error').classList.add('hidden');
@@ -1218,7 +1232,7 @@ projectEditForm.addEventListener('submit', async (e) => {
     const quoteUrl = normalizeUrl(f.quote_url.value);
     const quoteLabel = f.quote_label.value.trim();
     if (quoteLabel && !quoteUrl) throw new Error('Renseigne le lien du devis.');
-    const patch = { name, year, quote_label: quoteUrl ? quoteLabel : null, quote_url: quoteUrl || null };
+    const patch = { name, year, type: canonicalType(f.type.value), quote_label: quoteUrl ? quoteLabel : null, quote_url: quoteUrl || null };
     await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: patch });
     if (name !== p.name) {
       await api('tasks', `?project_id=eq.${p.id}`, { method: 'PATCH', body: { project_name: name } });
@@ -1408,6 +1422,7 @@ function renderClientPage(c) {
   $('#client-projects').innerHTML = ps.map((p) => `
     <li class="flex items-center gap-2 py-2 text-sm">
       <button type="button" class="min-w-0 flex-1 text-left truncate font-medium hover:underline" data-open-project="${p.id}">${esc(p.name)}</button>
+      ${p.type ? `<span class="hidden sm:inline text-xs text-slate-500 truncate max-w-[10rem]">${esc(p.type)}</span>` : ''}
       <span class="text-xs text-slate-500 tabular-nums">${p.year ?? ''}</span>
       ${p.status === 'termine'
         ? `<span class="text-[11px] font-medium bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">Terminé</span>
@@ -1547,6 +1562,132 @@ $('#client-delete').addEventListener('click', async () => {
   } catch (ex) { fail(err, ex); }
 });
 
+// ---------- Réglages : types de projet ----------
+// Un type saisi qui correspond (casse ignorée) à un type par défaut prend son écriture exacte.
+function canonicalType(raw) {
+  const name = String(raw ?? '').trim();
+  if (!name) return null;
+  return projectTypes.find((t) => same(t.name, name))?.name ?? name;
+}
+
+function fillTypeList() {
+  $('#types-datalist').innerHTML = typeSuggestions(projectTypes, projects)
+    .map((t) => `<option value="${esc(t.name)}">${t.custom ? 'personnalisé' : ''}</option>`).join('');
+}
+
+const typeUsage = (name) => projects.filter((p) => p.type && same(p.type, name)).length;
+const ICON_BTN = 'w-7 h-7 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition';
+
+function renderSettings() {
+  const list = [...projectTypes].sort((a, b) => a.position - b.position);
+  $('#types-list').innerHTML = list.map((t, i) => {
+    const n = typeUsage(t.name);
+    return `
+      <li class="flex items-center gap-2 py-1.5">
+        <span class="w-5 text-right text-xs text-slate-400 tabular-nums">${i + 1}</span>
+        <input value="${esc(t.name)}" data-type-rename="${t.id}" autocomplete="off" aria-label="Nom du type ${esc(t.name)}"
+          class="min-w-0 flex-1 px-2 py-1 text-sm rounded-md bg-transparent border border-transparent hover:border-slate-200 focus:bg-white focus:border-slate-300 focus:outline-none" />
+        <span class="text-xs text-slate-500 tabular-nums whitespace-nowrap">${n} projet${n > 1 ? 's' : ''}</span>
+        <button type="button" class="${ICON_BTN}" data-type-move="${t.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} title="Monter" aria-label="Monter ${esc(t.name)}">↑</button>
+        <button type="button" class="${ICON_BTN}" data-type-move="${t.id}" data-dir="1" ${i === list.length - 1 ? 'disabled' : ''} title="Descendre" aria-label="Descendre ${esc(t.name)}">↓</button>
+        <button type="button" class="${ICON_BTN} hover:!text-red-600" data-type-delete="${t.id}" title="Supprimer" aria-label="Supprimer ${esc(t.name)}">×</button>
+      </li>`;
+  }).join('') || '<li class="py-2 text-sm text-slate-400">Aucun type par défaut.</li>';
+  const custom = typeSuggestions(projectTypes, projects).filter((t) => t.custom);
+  $('#custom-types').innerHTML = custom.length ? `
+    <h4 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Types personnalisés (saisis sur des projets)</h4>
+    <ul class="flex flex-wrap gap-1.5">${custom.map((t) => `
+      <li class="inline-flex items-center gap-1.5 text-xs rounded-md border border-slate-200 bg-slate-50 pl-2 pr-1 py-1">
+        <span>${esc(t.name)}</span><span class="text-slate-400 tabular-nums">${typeUsage(t.name)}</span>
+        <button type="button" class="rounded px-1.5 py-0.5 font-medium text-slate-600 hover:bg-white hover:text-slate-900 transition" data-type-promote="${esc(t.name)}"
+          title="Ajouter aux types par défaut">+ Défaut</button>
+      </li>`).join('')}</ul>` : '';
+}
+
+const typesError = (ex) => fail($('#types-error'), ex);
+
+async function addType(name) {
+  $('#types-error').classList.add('hidden');
+  const msg = typeNameError(projectTypes, null, name);
+  if (msg) throw new Error(msg);
+  const position = Math.max(0, ...projectTypes.map((t) => t.position)) + 1;
+  const [created] = await api('project_types', '', { method: 'POST', body: { name: name.trim(), position }, prefer: 'return=representation' });
+  projectTypes.push(created);
+  render();
+}
+
+$('#type-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await addType(f.type_name.value);
+    f.reset();
+    f.type_name.focus();
+  } catch (ex) { typesError(ex); }
+});
+
+// Renommage : le nouveau nom s'applique aussi aux projets qui portaient l'ancien.
+$('#types-list').addEventListener('change', async (e) => {
+  const id = e.target.dataset.typeRename;
+  if (!id) return;
+  const t = projectTypes.find((x) => x.id === id);
+  const name = e.target.value.trim();
+  $('#types-error').classList.add('hidden');
+  try {
+    if (name === t.name) return;
+    const msg = typeNameError(projectTypes, id, name);
+    if (msg) throw new Error(msg);
+    const old = t.name;
+    await api('project_types', `?id=eq.${id}`, { method: 'PATCH', body: { name } });
+    await api('projects', `?type=eq.${encodeURIComponent(old)}`, { method: 'PATCH', body: { type: name } });
+    t.name = name;
+    projects.forEach((p) => { if (p.type === old) p.type = name; });
+    render();
+    toast('Type renommé');
+  } catch (ex) {
+    e.target.value = t.name;
+    typesError(ex);
+  }
+});
+$('#types-list').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.dataset.typeRename) { e.preventDefault(); e.target.blur(); }
+  if (e.key === 'Escape' && e.target.dataset.typeRename) {
+    e.target.value = projectTypes.find((x) => x.id === e.target.dataset.typeRename).name;
+    e.target.blur();
+  }
+});
+
+$('#settings-view').addEventListener('click', async (e) => {
+  const moveId = e.target.closest('[data-type-move]')?.dataset.typeMove;
+  const deleteId = e.target.closest('[data-type-delete]')?.dataset.typeDelete;
+  const promote = e.target.closest('[data-type-promote]')?.dataset.typePromote;
+  if (moveId) {
+    const next = moveItem(projectTypes, moveId, +e.target.closest('[data-type-move]').dataset.dir);
+    const changed = next.filter((t) => projectTypes.find((x) => x.id === t.id).position !== t.position);
+    const snapshot = projectTypes;
+    projectTypes = next;
+    render();
+    run(() => Promise.all(changed.map((t) => api('project_types', `?id=eq.${t.id}`, { method: 'PATCH', body: { position: t.position } }))),
+      () => { projectTypes = snapshot; });
+  } else if (deleteId) {
+    const t = projectTypes.find((x) => x.id === deleteId);
+    const n = typeUsage(t.name);
+    const ok = await askConfirm({
+      title: `Supprimer le type « ${t.name} » ?`,
+      message: n ? `${n > 1 ? `Les ${n} projets qui l’utilisent le gardent` : 'Le projet qui l’utilise le garde'} : il deviendra un type personnalisé.` : 'Aucun projet ne l’utilise.',
+      confirmLabel: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    const snapshot = projectTypes;
+    projectTypes = projectTypes.filter((x) => x.id !== deleteId);
+    render();
+    run(() => api('project_types', `?id=eq.${deleteId}`, { method: 'DELETE' }), () => { projectTypes = snapshot; });
+  } else if (promote) {
+    try { await addType(promote); } catch (ex) { typesError(ex); }
+  }
+});
+
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
 const LATEST = CHANGELOG[0].version;
@@ -1616,6 +1757,9 @@ const TOURS = {
       { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
         title: 'Les archives',
         content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },
+      { id: 'settings', targetSelector: '#tab-settings', placement: 'bottom', lot: 'Lot 13',
+        title: 'Les réglages',
+        content: 'Définis ici les types de projet par défaut et leur ordre. Ils sont proposés en premier dans le détail d’un projet, avant les types saisis librement.' },
       { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
         title: 'Nouvelle semaine',
         content: 'Les tâches terminées sont archivées (le temps passé est conservé), la semaine est enregistrée dans l’onglet Historique et les autres tâches reviennent sur Lundi.' },
@@ -1763,6 +1907,7 @@ $('#logout').addEventListener('click', () => {
   links = [];
   comments = [];
   weeks = [];
+  projectTypes = [];
   openComments.clear();
   openWeeks.clear();
   setAuthed(false);
@@ -1773,8 +1918,8 @@ async function start() {
   setAuthed(true);
   render();
   await run(async () => {
-    [clients, projects, tasks, history, links, comments, weeks] = await Promise.all([
-      db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(), db.listWeeks(),
+    [clients, projects, tasks, history, links, comments, weeks, projectTypes] = await Promise.all([
+      db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(), db.listWeeks(), db.listTypes(),
     ]);
     render();
   });

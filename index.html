@@ -87,6 +87,8 @@
         class="shrink-0 whitespace-nowrap px-3 sm:px-3.5 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Clients</a>
       <a id="tab-archives" href="#archives" data-tab="archives" data-lot="Lot 2"
         class="shrink-0 whitespace-nowrap px-3 sm:px-3.5 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Archives</a>
+      <a id="tab-settings" href="#settings" data-tab="settings" data-lot="Lot 13"
+        class="shrink-0 whitespace-nowrap px-3 sm:px-3.5 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 transition">Réglages</a>
     </nav>
 
     <!-- Planning : kanban + ajout (2/3) | sas d'attente (1/3) -->
@@ -221,6 +223,25 @@
       </div>
     </div>
 
+    <!-- Réglages : taxonomie des types de projet -->
+    <div id="settings-view" class="hidden max-w-2xl space-y-6" data-lot="Lot 13">
+      <h2 class="text-lg font-semibold tracking-tight">Réglages</h2>
+      <section class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3" aria-labelledby="types-title">
+        <div>
+          <h3 id="types-title" class="text-sm font-semibold">Types de projet par défaut</h3>
+          <p class="text-xs text-slate-500 mt-0.5">Proposés en premier, dans cet ordre, dans le détail d’un projet. Les types saisis librement sur un projet sont proposés ensuite.</p>
+        </div>
+        <ul id="types-list" class="divide-y divide-slate-100"></ul>
+        <form id="type-form" class="flex gap-2">
+          <input name="type_name" required autocomplete="off" placeholder="Nouveau type" aria-label="Nom du nouveau type"
+            class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">+ Type</button>
+        </form>
+        <p id="types-error" class="hidden text-sm text-red-700"></p>
+        <div id="custom-types"></div>
+      </section>
+    </div>
+
     <!-- Page Archives : projets terminés -->
     <div id="archives-view" class="hidden" data-lot="Lot 2">
       <h2 class="text-lg font-semibold tracking-tight mb-4">
@@ -283,6 +304,9 @@
           <input name="year" required inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Année" placeholder="Année"
             class="w-20 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
         </div>
+        <input name="type" list="types-datalist" autocomplete="off" aria-label="Type de projet" placeholder="Type de projet (ex. Site web)"
+          data-lot="Lot 13" class="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+        <datalist id="types-datalist"></datalist>
         <div class="grid grid-cols-5 gap-2" data-lot="Lot 8">
           <input name="quote_label" autocomplete="off" aria-label="Libellé du devis" placeholder="Devis (libellé)"
             class="col-span-2 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
