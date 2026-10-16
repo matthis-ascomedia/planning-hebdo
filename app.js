@@ -2,7 +2,7 @@ const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
-const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, typeSuggestions, typeNameError, moveItem,
+const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime,
   comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
@@ -22,6 +22,13 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.16.0', type: 'mineure', lot: 'Lot 16', date: '2026-10-16',
+    items: [
+      'Dupliquer une tâche (icône ⧉ au survol de la carte) vers un jour de la semaine ou le sas d’attente.',
+      'La copie reprend le projet, le nom, les heures, les étiquettes et la réunion ; ni commentaires, ni récurrence.',
+    ],
+  },
   {
     version: '1.15.1', type: 'patch', lot: 'Lot 15', date: '2026-10-16',
     items: ['Mobile : les cinq onglets (dont Réglages) tiennent sur la largeur de l’écran.'],
@@ -413,6 +420,9 @@ function occurrenceRow(series) {
   };
 }
 
+// Pictogramme « duplication » (deux feuilles superposées).
+const COPY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" class="w-3.5 h-3.5 pointer-events-none" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></svg>';
+
 function cardHTML(t) {
   const done = t.is_completed;
   const main = primaryLabel(t, labels);
@@ -436,6 +446,8 @@ function cardHTML(t) {
       </div>
       <!-- Actions en surimpression au survol : le titre garde toute la largeur de la carte -->
       <div class="absolute top-1.5 right-1.5 flex items-center gap-0.5 rounded-md bg-white/95 px-1 py-0.5 shadow-sm ring-1 ring-slate-200 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+        <button class="text-slate-400 hover:text-slate-900 leading-none px-0.5" data-duplicate="${t.id}" data-lot="Lot 16"
+                title="Dupliquer" aria-label="Dupliquer la tâche">${COPY_ICON}</button>
         <button class="text-slate-400 hover:text-slate-900 text-sm leading-none px-0.5"
                 data-edit="${t.id}" data-lot="Lot 1" title="Modifier" aria-label="Modifier">✎</button>
         <button class="text-slate-400 hover:text-red-500 text-base leading-none px-0.5"
@@ -946,11 +958,55 @@ function onTaskAction(e) {
   if (onCommentAction(e)) return;
   const editId = e.target.dataset.edit;
   if (editId) return openEdit(editId);
+  const dup = e.target.closest('[data-duplicate]')?.dataset.duplicate;
+  if (dup) return openDuplicate(dup);
   const unplan = e.target.dataset.unplan;
   if (unplan) return unplanTask(unplan);
   const id = e.target.dataset.delete;
   if (id) deleteTaskForever(id);
 }
+
+// Duplication : choix de la destination (jour ou sas), jour actuel présélectionné.
+const duplicateDialog = $('#duplicate-dialog');
+
+function openDuplicate(id) {
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return;
+  duplicateDialog.dataset.id = id;
+  $('#duplicate-task').textContent = t.task_name;
+  const btn = (day, label, extra = '') => {
+    const current = (t.day_of_week ?? '') === day;
+    return `<button type="button" data-duplicate-to="${day}" ${current ? 'aria-current="true"' : ''}
+      class="${extra} px-3 py-2 text-sm font-medium rounded-lg border transition ${current
+        ? 'border-slate-900 bg-slate-900 text-white hover:bg-slate-700'
+        : 'border-slate-200 bg-white hover:bg-slate-100'}">${label}${current ? ' <span class="text-xs font-normal opacity-75">(actuel)</span>' : ''}</button>`;
+  };
+  $('#duplicate-targets').innerHTML = DAYS.map((d) => btn(d, d)).join('') + btn('', 'Sas d’attente', 'col-span-2');
+  duplicateDialog.showModal();
+  ($('#duplicate-targets [aria-current]') || $('#duplicate-targets button')).focus();
+}
+
+async function duplicateTask(id, day) {
+  const t = tasks.find((x) => x.id === id);
+  const p = projects.find((x) => x.id === t.project_id);
+  await run(async () => {
+    const [created] = await db.insert(duplicateRow(t, day || null));
+    // Copie rangée dans le sas d'un projet terminé : on le rouvre, sinon elle serait invisible.
+    if (!day && p && p.status !== 'en_cours') await reopenIfArchived(p);
+    tasks.push(created);
+    render();
+    toast(day ? `Tâche dupliquée sur ${day}` : 'Tâche dupliquée dans le sas');
+  });
+}
+
+$('#duplicate-targets').addEventListener('click', (e) => {
+  const target = e.target.closest('[data-duplicate-to]');
+  if (!target) return;
+  duplicateDialog.close();
+  duplicateTask(duplicateDialog.dataset.id, target.dataset.duplicateTo);
+});
+$('#duplicate-cancel').addEventListener('click', () => duplicateDialog.close());
+duplicateDialog.addEventListener('click', (e) => { if (e.target === duplicateDialog) duplicateDialog.close(); });
 
 // Retire une tâche du planning : elle retourne dans le dossier de son projet (sas), projet rouvert si besoin.
 function unplanTask(id) {
@@ -2126,7 +2182,7 @@ const TOURS = {
         content: 'Choisis « Chaque semaine » ou « Chaque mois » (ex. le 1ᵉʳ mardi) : « Nouvelle Semaine » recréera la tâche quand il le faut. Une occurrence non faite reste sur son jour. Les séries se retrouvent dans Réglages.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
-        content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
+        content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
       { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 10',
         title: 'Commentaires et liens',
         content: 'Écris un commentaire directement sur une carte (Entrée pour l’ajouter). Le compteur ambre indique les commentaires non traités ; clique dessus pour les cocher. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },

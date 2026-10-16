@@ -117,6 +117,21 @@
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   }
 
+  // Copie d'une tâche vers un jour (ou le sas si null) : projet, nom, heures, étiquettes et réunion.
+  // Ni commentaires, ni état « terminée », ni récurrence : la copie est une tâche ponctuelle.
+  const duplicateRow = (t, day) => ({
+    project_id: t.project_id,
+    client_name: t.client_name,
+    project_name: t.project_name,
+    task_name: t.task_name,
+    estimated_hours: t.estimated_hours,
+    day_of_week: day || null,
+    is_completed: false,
+    label_ids: [...(t.label_ids || [])],
+    start_time: t.start_time ?? null,
+    meeting_url: t.meeting_url ?? null,
+  });
+
   // Tâches d'un projet rangées dans le sas (pas de jour).
   const parkedTasks = (tasks, projectId) => tasks.filter((t) => t.project_id === projectId && !t.day_of_week);
 
@@ -370,7 +385,7 @@
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
-  return { DAYS, same, suggestProjects, projectSuggestions, typeSuggestions, typeNameError, moveItem,
+  return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime,
     comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,

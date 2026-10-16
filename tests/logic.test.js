@@ -737,3 +737,31 @@ describe('newWeek (occurrences récurrentes)', () => {
     assert.deepEqual(res.tasks, []);
   });
 });
+
+describe('duplicateRow', () => {
+  const original = task({
+    id: 'orig', project_id: 'p1', client_name: 'Acme', project_name: 'Site', task_name: 'Point', estimated_hours: 1.5,
+    day_of_week: 'Mardi', is_completed: true, label_ids: ['L3'], start_time: '10:00', meeting_url: 'https://meet.google.com/x',
+    recurrence_id: 'S1', archived_at: null, week_id: null, created_at: '2026-10-01', projects: { id: 'p1' },
+  });
+
+  test('copie projet, nom, heures, étiquettes et réunion, vers la destination choisie', () => {
+    assert.deepEqual(L.duplicateRow(original, 'Jeudi'), {
+      project_id: 'p1', client_name: 'Acme', project_name: 'Site', task_name: 'Point', estimated_hours: 1.5,
+      day_of_week: 'Jeudi', is_completed: false, label_ids: ['L3'], start_time: '10:00', meeting_url: 'https://meet.google.com/x',
+    });
+  });
+
+  test('vers le sas : pas de jour ; jamais terminée, récurrente ni archivée', () => {
+    const row = L.duplicateRow(original, null);
+    assert.equal(row.day_of_week, null);
+    assert.equal(row.is_completed, false);
+    for (const k of ['id', 'recurrence_id', 'archived_at', 'week_id', 'created_at', 'projects']) assert.equal(k in row, false, k);
+  });
+
+  test('les étiquettes sont copiées, pas partagées', () => {
+    const row = L.duplicateRow(original, 'Lundi');
+    row.label_ids.push('X');
+    assert.deepEqual(original.label_ids, ['L3']);
+  });
+});

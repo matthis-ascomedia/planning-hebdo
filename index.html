@@ -439,6 +439,23 @@
     </div>
   </dialog>
 
+  <!-- Duplication d'une tâche : choix de la destination -->
+  <dialog id="duplicate-dialog" aria-labelledby="duplicate-title" data-lot="Lot 16"
+    class="m-auto w-[92vw] max-w-xs rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <div class="p-5 space-y-3">
+      <div>
+        <h2 id="duplicate-title" class="text-base font-semibold tracking-tight">Dupliquer la tâche</h2>
+        <p class="text-sm text-slate-500 truncate">« <span id="duplicate-task"></span> »</p>
+      </div>
+      <p class="text-xs text-slate-500">Où placer la copie ?</p>
+      <div id="duplicate-targets" class="grid grid-cols-2 gap-2"></div>
+      <div class="flex justify-end pt-1">
+        <button type="button" id="duplicate-cancel"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Confirmation commune (remplace les confirm() natifs) -->
   <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message" data-lot="Lot 12"
     class="m-auto w-[92vw] max-w-sm rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
