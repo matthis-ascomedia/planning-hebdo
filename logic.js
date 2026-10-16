@@ -79,6 +79,44 @@
     return sorted.map((x, k) => ({ ...x, position: k + 1 }));
   }
 
+  // Étiquettes (Réglages) : palette fixe ; l'ordre (position) sert de priorité visuelle.
+  const LABEL_COLORS = ['rouge', 'orange', 'jaune', 'vert', 'bleu', 'violet', 'rose', 'gris'];
+
+  // Étiquettes d'une tâche, de la plus prioritaire à la moins prioritaire (identifiants inconnus ignorés).
+  function taskLabels(task, labels) {
+    const ids = new Set(task.label_ids || []);
+    return labels.filter((l) => ids.has(l.id)).sort((a, b) => a.position - b.position);
+  }
+
+  // Étiquette qui donne sa teinte à la carte : la plus haute dans l'ordre des réglages.
+  const primaryLabel = (task, labels) => taskLabels(task, labels)[0] ?? null;
+
+  // Une tâche est une réunion dès qu'elle porte une étiquette « réunion » (heure + lien du salon).
+  const isMeeting = (task, labels) => taskLabels(task, labels).some((l) => l.is_meeting);
+
+  // Ordre d'une colonne : réunions avec heure en tête (heure croissante), puis le reste dans l'ordre reçu.
+  function sortDay(tasks, labels) {
+    const timed = (t) => !!t.start_time && isMeeting(t, labels);
+    return tasks.filter(timed).sort((a, b) => a.start_time.localeCompare(b.start_time))
+      .concat(tasks.filter((t) => !timed(t)));
+  }
+
+  function labelNameError(labels, id, name) {
+    if (!String(name ?? '').trim()) return 'Le nom de l’étiquette est obligatoire.';
+    return labels.some((l) => l.id !== id && same(l.name, name)) ? 'Cette étiquette existe déjà.' : '';
+  }
+
+  // Heure d'une réunion : « 9:05 », « 9h », « 14h30 », « 14:30:00 »… -> « HH:MM » ; '' si vide.
+  function parseTime(raw) {
+    const text = String(raw ?? '').trim().toLowerCase();
+    if (!text) return '';
+    const m = text.match(/^(\d{1,2})\s*(?:[:h]\s*(\d{2})?)?(?::\d{2})?$/);
+    const hh = m ? Number(m[1]) : NaN;
+    const mm = m && m[2] ? Number(m[2]) : 0;
+    if (!m || hh > 23 || mm > 59) throw new Error(`Heure invalide : « ${String(raw).trim()} » (ex. 09:30).`);
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+
   // Tâches d'un projet rangées dans le sas (pas de jour).
   const parkedTasks = (tasks, projectId) => tasks.filter((t) => t.project_id === projectId && !t.day_of_week);
 
@@ -296,7 +334,8 @@
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
-  return { DAYS, same, suggestProjects, projectSuggestions, typeSuggestions, typeNameError, moveItem, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  return { DAYS, same, suggestProjects, projectSuggestions, typeSuggestions, typeNameError, moveItem,
+    LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };

@@ -115,6 +115,12 @@
             class="col-span-1 sm:col-span-2 px-3 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 active:scale-[.98] transition">
             Ajouter
           </button>
+          <div data-label-picker data-lot="Lot 14" class="col-span-2 sm:col-span-6 flex flex-wrap items-center gap-1.5"></div>
+          <div data-meeting-fields data-lot="Lot 14" class="hidden col-span-2 sm:col-span-6 grid grid-cols-3 gap-2">
+            <input name="start_time" type="time" aria-label="Heure de la réunion" class="col-span-1 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+            <input name="meeting_url" autocomplete="off" aria-label="Lien du salon de visioconférence" placeholder="Lien du salon (Meet, Teams, Zoom…)"
+              class="col-span-2 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          </div>
         </form>
 
         <div id="error" class="hidden mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
@@ -240,6 +246,24 @@
         <p id="types-error" class="hidden text-sm text-red-700"></p>
         <div id="custom-types"></div>
       </section>
+
+      <section class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3" aria-labelledby="labels-title" data-lot="Lot 14">
+        <div>
+          <h3 id="labels-title" class="text-sm font-semibold">Étiquettes</h3>
+          <p class="text-xs text-slate-500 mt-0.5">Une carte prend la teinte de sa première étiquette dans cet ordre. Une étiquette « réunion » ajoute à la tâche une heure et un lien vers le salon de visioconférence.</p>
+        </div>
+        <ul id="labels-list" class="divide-y divide-slate-100"></ul>
+        <form id="label-form" class="flex flex-wrap items-center gap-2">
+          <input name="label_name" required autocomplete="off" placeholder="Nouvelle étiquette" aria-label="Nom de la nouvelle étiquette"
+            class="min-w-0 flex-1 basis-40 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          <select name="color" aria-label="Teinte de la nouvelle étiquette" class="px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none"></select>
+          <label class="inline-flex items-center gap-1.5 text-sm text-slate-600">
+            <input type="checkbox" name="is_meeting" class="chk" /> Réunion
+          </label>
+          <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">+ Étiquette</button>
+        </form>
+        <p id="labels-error" class="hidden text-sm text-red-700"></p>
+      </section>
     </div>
 
     <!-- Page Archives : projets terminés -->
@@ -277,6 +301,12 @@
           <option value="">Sas d’attente</option>
         </select>
       </div>
+          <div data-label-picker data-lot="Lot 14" class=" flex flex-wrap items-center gap-1.5"></div>
+          <div data-meeting-fields data-lot="Lot 14" class="hidden  grid grid-cols-3 gap-2">
+            <input name="start_time" type="time" aria-label="Heure de la réunion" class="col-span-1 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+            <input name="meeting_url" autocomplete="off" aria-label="Lien du salon de visioconférence" placeholder="Lien du salon (Meet, Teams, Zoom…)"
+              class="col-span-2 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          </div>
       <p id="edit-error" class="hidden text-sm text-red-700"></p>
       <div class="flex flex-wrap items-center justify-end gap-2 pt-1">
         <button type="button" id="edit-delete" data-lot="Lot 12"

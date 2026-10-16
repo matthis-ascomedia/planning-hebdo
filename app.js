@@ -2,7 +2,8 @@ const SUPABASE_URL = 'https://eubxxvoiudlopkimysaj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV1Ynh4dm9pdWRsb3BraW15c2FqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODkwMTksImV4cCI6MjEwNzM2NTAxOX0.LUdqhs06JZ98yE2M5_oifX6is0hyGWwGnU1iWXDkTOE';
 
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
-const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, typeSuggestions, typeNameError, moveItem, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, typeSuggestions, typeNameError, moveItem,
+  LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, labelNameError, parseTime, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
@@ -20,6 +21,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.14.0', type: 'mineure', lot: 'Lot 14', date: '2026-10-16',
+    items: [
+      'Étiquettes de tâche administrables dans Réglages (nom, teinte, ordre) : Urgent, En attente client, Réunion.',
+      'Les cartes prennent la teinte de leur étiquette la plus prioritaire.',
+      'Réunions : heure bien visible, bouton « Rejoindre » vers le salon de visio, tri par heure en haut du jour.',
+    ],
+  },
   {
     version: '1.13.0', type: 'mineure', lot: 'Lot 13', date: '2026-10-16',
     items: [
@@ -134,6 +143,7 @@ let links = []; // liens d'accès rapide des projets (project_links)
 let comments = []; // commentaires des tâches (task_comments), archivées comprises
 let weeks = []; // semaines closes par « Nouvelle Semaine » (instantanés)
 let projectTypes = []; // types de projet par défaut (Réglages), ordonnés par position
+let labels = []; // étiquettes de tâche (Réglages), ordonnées par position = priorité visuelle
 const openWeeks = new Set(); // fiches de semaine dépliées dans l'historique
 const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
 let showLinks = true;
@@ -212,6 +222,7 @@ const db = {
   listComments: () => api('task_comments', '?select=*&order=created_at.asc'),
   listWeeks: () => api('weeks', '?select=*&order=closed_at.desc'),
   listTypes: () => api('project_types', '?select=*&order=position.asc'),
+  listLabels: () => api('labels', '?select=*&order=position.asc'),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -306,11 +317,37 @@ async function run(action, rollback) {
 }
 
 // ---------- Rendu ----------
+// Teintes de la palette des étiquettes (classes Tailwind complètes : générées par le CDN à l'affichage).
+const TINTS = {
+  rouge: { name: 'Rouge', chip: 'bg-red-100 text-red-800', card: 'bg-red-50', edge: 'border-l-red-500', dot: 'bg-red-500', text: 'text-red-700', on: 'peer-checked:bg-red-100 peer-checked:text-red-800' },
+  orange: { name: 'Orange', chip: 'bg-orange-100 text-orange-800', card: 'bg-orange-50', edge: 'border-l-orange-500', dot: 'bg-orange-500', text: 'text-orange-700', on: 'peer-checked:bg-orange-100 peer-checked:text-orange-800' },
+  jaune: { name: 'Jaune', chip: 'bg-yellow-100 text-yellow-800', card: 'bg-yellow-50', edge: 'border-l-yellow-400', dot: 'bg-yellow-400', text: 'text-yellow-700', on: 'peer-checked:bg-yellow-100 peer-checked:text-yellow-800' },
+  vert: { name: 'Vert', chip: 'bg-emerald-100 text-emerald-800', card: 'bg-emerald-50', edge: 'border-l-emerald-500', dot: 'bg-emerald-500', text: 'text-emerald-700', on: 'peer-checked:bg-emerald-100 peer-checked:text-emerald-800' },
+  bleu: { name: 'Bleu', chip: 'bg-blue-100 text-blue-800', card: 'bg-blue-50', edge: 'border-l-blue-500', dot: 'bg-blue-500', text: 'text-blue-700', on: 'peer-checked:bg-blue-100 peer-checked:text-blue-800' },
+  violet: { name: 'Violet', chip: 'bg-violet-100 text-violet-800', card: 'bg-violet-50', edge: 'border-l-violet-500', dot: 'bg-violet-500', text: 'text-violet-700', on: 'peer-checked:bg-violet-100 peer-checked:text-violet-800' },
+  rose: { name: 'Rose', chip: 'bg-pink-100 text-pink-800', card: 'bg-pink-50', edge: 'border-l-pink-500', dot: 'bg-pink-500', text: 'text-pink-700', on: 'peer-checked:bg-pink-100 peer-checked:text-pink-800' },
+  gris: { name: 'Gris', chip: 'bg-slate-200 text-slate-700', card: 'bg-slate-100', edge: 'border-l-slate-500', dot: 'bg-slate-500', text: 'text-slate-700', on: 'peer-checked:bg-slate-200 peer-checked:text-slate-800' },
+};
+const tint = (l) => TINTS[l?.color] || TINTS.gris;
+
+// Pastilles des étiquettes d'une tâche (planning, sas, détail projet, historique).
+const labelChipsHTML = (t) => taskLabels(t, labels).map((l) => `
+  <span class="inline-flex items-center max-w-full truncate text-[11px] font-medium rounded px-1.5 py-0.5 ${tint(l).chip}">${esc(l.name)}</span>`).join('');
+
 function cardHTML(t) {
   const done = t.is_completed;
+  const main = primaryLabel(t, labels);
+  const meeting = isMeeting(t, labels);
+  const surface = main ? `${tint(main).card} border border-slate-200 border-l-[3px] ${tint(main).edge}` : 'bg-white border border-slate-200';
   return `
-    <article class="card group relative bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing hover:border-slate-300 transition ${done ? 'opacity-60' : ''}"
+    <article class="card group relative ${surface} rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing ${main ? 'hover:shadow-md' : 'hover:border-slate-300'} transition ${done ? 'opacity-60' : ''}"
              draggable="true" data-id="${t.id}">
+      ${meeting ? `
+      <div class="flex items-center gap-2 mb-1.5" data-lot="Lot 14">
+        <span class="text-base font-semibold tabular-nums ${tint(main).text}">${esc(t.start_time || '--:--')}</span>
+        ${t.meeting_url ? `<a href="${esc(t.meeting_url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="${esc(t.meeting_url)}"
+             class="inline-flex items-center gap-1 text-[11px] font-semibold rounded-md bg-slate-900 text-white px-2 py-1 hover:bg-slate-700 transition">Rejoindre ↗</a>` : ''}
+      </div>` : ''}
       <div class="flex items-start gap-2">
         <input type="checkbox" class="chk mt-0.5" ${done ? 'checked' : ''} data-toggle="${t.id}" aria-label="Terminée" />
         <div class="min-w-0 flex-1">
@@ -326,14 +363,15 @@ function cardHTML(t) {
                 data-unplan="${t.id}" data-lot="Lot 12" title="Retirer du planning (retour dans le sas)" aria-label="Retirer du planning">×</button>
       </div>
       <div class="mt-2 flex flex-wrap items-center gap-1.5">
-        <span class="inline-block text-[11px] font-medium text-slate-600 bg-slate-100 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
+        <span class="inline-block text-[11px] font-medium text-slate-600 bg-white/70 border border-slate-200 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
+        ${labelChipsHTML(t)}
         ${commentBadgeHTML(t)}
       </div>
       ${showLinks ? cardLinksHTML(t) : ''}
       ${openComments.has(t.id) ? `<ul class="mt-2 space-y-1" data-lot="Lot 10">${taskComments(t.id).map(commentHTML).join('')}</ul>` : ''}
       <form class="mt-2" data-comment-form="${t.id}" data-lot="Lot 10">
         <input name="body" autocomplete="off" maxlength="2000" placeholder="Commenter…" aria-label="Ajouter un commentaire à « ${esc(t.task_name)} »"
-          class="w-full px-2 py-1 text-xs rounded-md bg-slate-50 border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-slate-300 focus:outline-none" />
+          class="w-full px-2 py-1 text-xs rounded-md bg-slate-900/[.04] border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-slate-300 focus:outline-none" />
       </form>
     </article>`;
 }
@@ -374,9 +412,43 @@ function cardLinksHTML(t) {
          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}">${esc(l.label)}</a>`).join('')}</div>`;
 }
 
+// Sélecteur d'étiquettes d'un formulaire : pastilles à cocher ; conserve la sélection en cours d'un rendu à l'autre.
+const formLabels = (form) => [...form.querySelectorAll('input[name="label"]:checked')].map((i) => i.value);
+
+function renderLabelPicker(form, selected = formLabels(form)) {
+  const box = form.querySelector('[data-label-picker]');
+  box.innerHTML = labels.length ? '<span class="text-xs text-slate-500 mr-0.5">Étiquettes</span>' + [...labels].sort((a, b) => a.position - b.position).map((l) => `
+    <label class="cursor-pointer">
+      <input type="checkbox" name="label" value="${l.id}" class="peer sr-only" ${selected.includes(l.id) ? 'checked' : ''} />
+      <span class="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition
+        hover:border-slate-300 peer-checked:border-transparent ${tint(l).on} peer-focus-visible:ring-2 peer-focus-visible:ring-slate-400">
+        <span class="w-2 h-2 rounded-full ${tint(l).dot}"></span>${esc(l.name)}
+      </span>
+    </label>`).join('') : '';
+  syncMeetingFields(form);
+}
+
+// Les champs heure + lien n'apparaissent que si une étiquette « réunion » est cochée.
+function syncMeetingFields(form) {
+  const meeting = isMeeting({ label_ids: formLabels(form) }, labels);
+  form.querySelector('[data-meeting-fields]').classList.toggle('hidden', !meeting);
+  return meeting;
+}
+
+document.addEventListener('change', (e) => {
+  if (e.target.name === 'label' && e.target.form) syncMeetingFields(e.target.form);
+});
+
+// Champs réunion d'un formulaire, validés ; null si aucune étiquette « réunion » n'est cochée.
+function meetingInput(form) {
+  if (!syncMeetingFields(form)) return null;
+  return { start_time: parseTime(form.start_time.value) || null, meeting_url: normalizeUrl(form.meeting_url.value) || null };
+}
+
 function render() {
+  renderLabelPicker($('#add-form'));
   $('#board').innerHTML = DAYS.map((day) => {
-    const list = tasks.filter((t) => t.day_of_week === day);
+    const list = sortDay(tasks.filter((t) => t.day_of_week === day), labels);
     const total = list.reduce((s, t) => s + (+t.estimated_hours || 0), 0);
     return `
       <section class="col flex flex-col rounded-xl bg-slate-100/60 p-2 min-h-[200px] md:min-h-[60vh] transition" data-day="${day}">
@@ -419,7 +491,8 @@ function parkedHTML(t) {
   return `
     <article class="card group flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5 cursor-grab active:cursor-grabbing hover:border-slate-300 transition"
              draggable="true" data-id="${t.id}">
-      <p class="min-w-0 flex-1 text-sm break-words ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</p>
+      <p class="min-w-0 flex-1 text-sm break-words ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}
+        ${taskLabels(t, labels).length ? `<span class="mt-0.5 flex flex-wrap gap-1">${labelChipsHTML(t)}</span>` : ''}</p>
       <span class="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
       <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-slate-700 text-sm leading-none transition"
               data-edit="${t.id}" title="Modifier" aria-label="Modifier">✎</button>
@@ -593,12 +666,17 @@ window.addEventListener('hashchange', route);
 $('#add-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
+  let meeting;
+  try { meeting = meetingInput(f); } catch (ex) { showError(ex.message); return; }
   const draft = {
     client: f.client_name.value,
     project: f.project_name.value,
     task_name: f.task_name.value.trim(),
     estimated_hours: parseFloat(f.estimated_hours.value) || 0,
     day_of_week: f.day_of_week.value || null,
+    label_ids: formLabels(f),
+    start_time: meeting?.start_time ?? null,
+    meeting_url: meeting?.meeting_url ?? null,
   };
   // Tâche ajoutée directement dans le sas : on demande dans quel projet la ranger.
   if (!draft.day_of_week) return openAssign(draft);
@@ -612,6 +690,9 @@ function resetAddForm() {
   const f = $('#add-form');
   f.task_name.value = '';
   f.estimated_hours.value = '';
+  f.start_time.value = '';
+  f.meeting_url.value = '';
+  renderLabelPicker(f, []);
   f.task_name.focus();
 }
 
@@ -624,6 +705,9 @@ async function createTask(project, draft) {
     estimated_hours: draft.estimated_hours,
     day_of_week: draft.day_of_week,
     is_completed: false,
+    label_ids: draft.label_ids ?? [],
+    start_time: draft.start_time ?? null,
+    meeting_url: draft.meeting_url ?? null,
   });
   tasks.push(created);
   render();
@@ -1024,6 +1108,9 @@ function openEdit(id) {
   editForm.task_name.value = t.task_name;
   editForm.estimated_hours.value = t.estimated_hours;
   editForm.day_of_week.value = t.day_of_week ?? '';
+  editForm.start_time.value = t.start_time ?? '';
+  editForm.meeting_url.value = t.meeting_url ?? '';
+  renderLabelPicker(editForm, t.label_ids ?? []);
   $('#edit-error').classList.add('hidden');
   editDialog.showModal();
   editForm.task_name.focus();
@@ -1043,8 +1130,12 @@ editForm.addEventListener('submit', async (e) => {
   const err = $('#edit-error');
   err.classList.add('hidden');
   try {
+    // Sans étiquette « réunion », l'heure et le lien déjà saisis sont conservés (masqués).
+    const meeting = meetingInput(f);
     const project = await ensureProject(f.client_name.value, f.project_name.value);
     const updated = await db.updateFull(f.dataset.id, {
+      label_ids: formLabels(f),
+      ...(meeting || {}),
       project_id: project.id,
       client_name: project.clients.name,
       project_name: project.name,
@@ -1125,6 +1216,7 @@ function openProject(id, { keepForm = false } = {}) {
     <li class="py-1.5 border-b border-slate-100 last:border-0">
       <div class="flex items-center gap-2 text-sm">
         <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
+        ${labelChipsHTML(t)}
         <span class="text-xs text-slate-500">${esc(status)}</span>
         <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
       </div>
@@ -1346,6 +1438,7 @@ function weekHTML(w) {
               <li class="py-1.5">
                 <div class="flex items-center gap-2 text-sm">
                   <span class="min-w-0 flex-1 truncate">${esc(t.task_name)}</span>
+                  ${labelChipsHTML(t)}
                   <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
                 </div>
                 ${cs.length ? `<ul class="mt-1 pl-3 space-y-1">${cs.map(commentHTML).join('')}</ul>` : ''}
@@ -1579,6 +1672,7 @@ const typeUsage = (name) => projects.filter((p) => p.type && same(p.type, name))
 const ICON_BTN = 'w-7 h-7 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition';
 
 function renderSettings() {
+  renderLabelsSettings();
   const list = [...projectTypes].sort((a, b) => a.position - b.position);
   $('#types-list').innerHTML = list.map((t, i) => {
     const n = typeUsage(t.name);
@@ -1688,6 +1782,120 @@ $('#settings-view').addEventListener('click', async (e) => {
   }
 });
 
+// ---------- Réglages : étiquettes ----------
+const colorOptions = (selected) => LABEL_COLORS.map((c) => `<option value="${c}" ${c === selected ? 'selected' : ''}>${TINTS[c].name}</option>`).join('');
+const labelUsage = (id) => tasks.concat(history).filter((t) => (t.label_ids || []).includes(id)).length;
+
+function renderLabelsSettings() {
+  const list = [...labels].sort((a, b) => a.position - b.position);
+  $('#labels-list').innerHTML = list.map((l, i) => {
+    const n = labelUsage(l.id);
+    return `
+      <li class="flex flex-wrap items-center gap-2 py-1.5">
+        <span class="w-3 h-3 shrink-0 rounded-full ${tint(l).dot}" aria-hidden="true"></span>
+        <input value="${esc(l.name)}" data-label-rename="${l.id}" autocomplete="off" aria-label="Nom de l’étiquette ${esc(l.name)}"
+          class="min-w-0 flex-1 basis-32 px-2 py-1 text-sm rounded-md bg-transparent border border-transparent hover:border-slate-200 focus:bg-white focus:border-slate-300 focus:outline-none" />
+        <select data-label-color="${l.id}" aria-label="Teinte de ${esc(l.name)}"
+          class="px-2 py-1 text-sm rounded-md bg-slate-50 border border-transparent hover:border-slate-200 focus:border-slate-300 focus:outline-none">${colorOptions(l.color)}</select>
+        <label class="inline-flex items-center gap-1.5 text-xs text-slate-600" title="Ajoute une heure et un lien de visio aux tâches qui la portent">
+          <input type="checkbox" class="chk" data-label-meeting="${l.id}" ${l.is_meeting ? 'checked' : ''} /> Réunion
+        </label>
+        <span class="w-16 text-right text-xs text-slate-500 tabular-nums whitespace-nowrap">${n} tâche${n > 1 ? 's' : ''}</span>
+        <button type="button" class="${ICON_BTN}" data-label-move="${l.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} title="Monter (plus prioritaire)" aria-label="Monter ${esc(l.name)}">↑</button>
+        <button type="button" class="${ICON_BTN}" data-label-move="${l.id}" data-dir="1" ${i === list.length - 1 ? 'disabled' : ''} title="Descendre" aria-label="Descendre ${esc(l.name)}">↓</button>
+        <button type="button" class="${ICON_BTN} hover:!text-red-600" data-label-delete="${l.id}" title="Supprimer" aria-label="Supprimer ${esc(l.name)}">×</button>
+      </li>`;
+  }).join('') || '<li class="py-2 text-sm text-slate-400">Aucune étiquette.</li>';
+  const sel = $('#label-form').color;
+  if (!sel.options.length) sel.innerHTML = colorOptions('bleu');
+}
+
+const labelsError = (ex) => fail($('#labels-error'), ex);
+
+$('#label-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  $('#labels-error').classList.add('hidden');
+  try {
+    const name = f.label_name.value.trim();
+    const msg = labelNameError(labels, null, name);
+    if (msg) throw new Error(msg);
+    const position = Math.max(0, ...labels.map((l) => l.position)) + 1;
+    const [created] = await api('labels', '', {
+      method: 'POST', body: { name, color: f.color.value, is_meeting: f.is_meeting.checked, position }, prefer: 'return=representation',
+    });
+    labels.push(created);
+    f.label_name.value = '';
+    f.is_meeting.checked = false;
+    render();
+    f.label_name.focus();
+  } catch (ex) { labelsError(ex); }
+});
+
+function patchLabel(l, patch) {
+  const prev = { ...l };
+  Object.assign(l, patch);
+  render();
+  run(() => api('labels', `?id=eq.${l.id}`, { method: 'PATCH', body: patch }), () => { Object.assign(l, prev); });
+}
+
+$('#labels-list').addEventListener('change', (e) => {
+  const { labelRename, labelColor, labelMeeting } = e.target.dataset;
+  $('#labels-error').classList.add('hidden');
+  if (labelRename) {
+    const l = labels.find((x) => x.id === labelRename);
+    const name = e.target.value.trim();
+    if (name === l.name) return;
+    const msg = labelNameError(labels, l.id, name);
+    if (msg) { e.target.value = l.name; labelsError(new Error(msg)); return; }
+    patchLabel(l, { name });
+  } else if (labelColor) {
+    patchLabel(labels.find((x) => x.id === labelColor), { color: e.target.value });
+  } else if (labelMeeting) {
+    patchLabel(labels.find((x) => x.id === labelMeeting), { is_meeting: e.target.checked });
+  }
+});
+$('#labels-list').addEventListener('keydown', (e) => {
+  if (!e.target.dataset.labelRename) return;
+  if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+  if (e.key === 'Escape') { e.target.value = labels.find((x) => x.id === e.target.dataset.labelRename).name; e.target.blur(); }
+});
+
+$('#labels-list').addEventListener('click', async (e) => {
+  const moveBtn = e.target.closest('[data-label-move]');
+  const deleteId = e.target.closest('[data-label-delete]')?.dataset.labelDelete;
+  if (moveBtn) {
+    const next = moveItem(labels, moveBtn.dataset.labelMove, +moveBtn.dataset.dir);
+    const changed = next.filter((l) => labels.find((x) => x.id === l.id).position !== l.position);
+    const snapshot = labels;
+    labels = next;
+    render();
+    run(() => Promise.all(changed.map((l) => api('labels', `?id=eq.${l.id}`, { method: 'PATCH', body: { position: l.position } }))),
+      () => { labels = snapshot; });
+  } else if (deleteId) {
+    // Suppression : l'étiquette est retirée des tâches qui la portent (heure et lien conservés, masqués).
+    const l = labels.find((x) => x.id === deleteId);
+    const used = tasks.concat(history).filter((t) => (t.label_ids || []).includes(deleteId));
+    const ok = await askConfirm({
+      title: `Supprimer l’étiquette « ${l.name} » ?`,
+      message: used.length
+        ? `Elle sera retirée de ${used.length > 1 ? `${used.length} tâches` : 'la tâche qui la porte'} (historique compris).`
+        : 'Aucune tâche ne la porte.',
+      confirmLabel: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    const snapshot = { labels, ids: used.map((t) => [t, t.label_ids]) };
+    labels = labels.filter((x) => x.id !== deleteId);
+    used.forEach((t) => { t.label_ids = t.label_ids.filter((id) => id !== deleteId); });
+    render();
+    run(async () => {
+      await Promise.all(used.map((t) => api('tasks', `?id=eq.${t.id}`, { method: 'PATCH', body: { label_ids: t.label_ids } })));
+      await api('labels', `?id=eq.${deleteId}`, { method: 'DELETE' });
+    }, () => { labels = snapshot.labels; snapshot.ids.forEach(([t, ids]) => { t.label_ids = ids; }); });
+  }
+});
+
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
 const LATEST = CHANGELOG[0].version;
@@ -1736,6 +1944,9 @@ const TOURS = {
       { id: 'add', targetSelector: '#add-form', placement: 'bottom', lot: 'Lot 1',
         title: 'Ajouter une tâche',
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
+      { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
+        title: 'Étiquettes et réunions',
+        content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
         content: 'Glisse les cartes d’un jour à l’autre. Survole une carte pour la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
@@ -1908,6 +2119,7 @@ $('#logout').addEventListener('click', () => {
   comments = [];
   weeks = [];
   projectTypes = [];
+  labels = [];
   openComments.clear();
   openWeeks.clear();
   setAuthed(false);
@@ -1918,8 +2130,9 @@ async function start() {
   setAuthed(true);
   render();
   await run(async () => {
-    [clients, projects, tasks, history, links, comments, weeks, projectTypes] = await Promise.all([
-      db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(), db.listWeeks(), db.listTypes(),
+    [clients, projects, tasks, history, links, comments, weeks, projectTypes, labels] = await Promise.all([
+      db.listClients(), db.listProjects(), db.list(), db.listHistory(), db.listLinks(), db.listComments(), db.listWeeks(),
+      db.listTypes(), db.listLabels(),
     ]);
     render();
   });

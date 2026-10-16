@@ -597,3 +597,67 @@ describe('moveItem', () => {
     assert.deepEqual(L.moveItem(shuffled, 'b', -1).map((x) => x.id), ['b', 'a', 'c']);
   });
 });
+
+describe('étiquettes', () => {
+  const labels = [
+    { id: 'meet', name: 'Réunion', color: 'bleu', is_meeting: true, position: 3 },
+    { id: 'urg', name: 'Urgent', color: 'rouge', is_meeting: false, position: 1 },
+    { id: 'wait', name: 'En attente client', color: 'jaune', is_meeting: false, position: 2 },
+  ];
+
+  test('taskLabels : étiquettes de la tâche par priorité, identifiants inconnus ignorés', () => {
+    const t = task({ label_ids: ['meet', 'ghost', 'urg'] });
+    assert.deepEqual(L.taskLabels(t, labels).map((l) => l.id), ['urg', 'meet']);
+    assert.deepEqual(L.taskLabels(task({}), labels), []);
+  });
+
+  test('primaryLabel : la plus haute dans l’ordre des réglages, sinon null', () => {
+    assert.equal(L.primaryLabel(task({ label_ids: ['meet', 'urg'] }), labels).id, 'urg');
+    assert.equal(L.primaryLabel(task({ label_ids: [] }), labels), null);
+  });
+
+  test('isMeeting : vrai dès qu’une étiquette « réunion » est posée', () => {
+    assert.equal(L.isMeeting(task({ label_ids: ['urg', 'meet'] }), labels), true);
+    assert.equal(L.isMeeting(task({ label_ids: ['urg'] }), labels), false);
+  });
+
+  test('sortDay : réunions avec heure en tête par heure croissante, puis le reste dans l’ordre', () => {
+    const list = [
+      task({ id: 'a' }),
+      task({ id: 'm2', label_ids: ['meet'], start_time: '14:00' }),
+      task({ id: 'b' }),
+      task({ id: 'm1', label_ids: ['meet'], start_time: '09:30' }),
+      task({ id: 'm0', label_ids: ['meet'], start_time: null }),
+      task({ id: 'x', label_ids: ['urg'], start_time: '08:00' }), // heure masquée : pas une réunion
+    ];
+    assert.deepEqual(L.sortDay(list, labels).map((t) => t.id), ['m1', 'm2', 'a', 'b', 'm0', 'x']);
+  });
+
+  test('labelNameError', () => {
+    assert.match(L.labelNameError(labels, null, ''), /obligatoire/);
+    assert.match(L.labelNameError(labels, null, 'urgent'), /existe déjà/);
+    assert.equal(L.labelNameError(labels, 'urg', 'URGENT'), '');
+  });
+
+  test('LABEL_COLORS : palette fixe de 8 teintes', () => {
+    assert.deepEqual(L.LABEL_COLORS, ['rouge', 'orange', 'jaune', 'vert', 'bleu', 'violet', 'rose', 'gris']);
+  });
+});
+
+describe('parseTime', () => {
+  test('formats acceptés, normalisés en HH:MM', () => {
+    assert.equal(L.parseTime('09:30'), '09:30');
+    assert.equal(L.parseTime('9:05'), '09:05');
+    assert.equal(L.parseTime('9h'), '09:00');
+    assert.equal(L.parseTime(' 14h30 '), '14:30');
+    assert.equal(L.parseTime('14:30:00'), '14:30');
+  });
+
+  test('vide : chaîne vide ; invalide : erreur', () => {
+    assert.equal(L.parseTime(''), '');
+    assert.equal(L.parseTime(null), '');
+    assert.throws(() => L.parseTime('25:00'), /Heure invalide/);
+    assert.throws(() => L.parseTime('9:75'), /Heure invalide/);
+    assert.throws(() => L.parseTime('midi'), /Heure invalide/);
+  });
+});
