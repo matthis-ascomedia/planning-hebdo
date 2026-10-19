@@ -12,7 +12,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
-  pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
+  pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
   weekSnapshot, weekPeriods, weekTasks } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
@@ -27,6 +27,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.20.0', type: 'mineure', lot: 'Lot 20', date: '2026-10-19',
+    items: [
+      'Commentaires : par défaut, ce qu’on écrit sur une carte est une simple note (sans case à cocher, jamais comptée comme non traitée).',
+      'Le bouton « À traiter » à côté du champ crée au contraire un point à cocher, comme avant.',
+      'Au survol d’un commentaire, « → note » / « → à traiter » change sa nature. Les commentaires existants restent « à traiter ».',
+    ],
+  },
   {
     version: '1.19.1', type: 'patch', lot: 'Lot 19', date: '2026-10-16',
     items: ['Import Google Agenda : une réunion par ligne sur écran large (horaire, projet et statut alignés).'],
@@ -200,6 +208,7 @@ let labels = []; // étiquettes de tâche (Réglages), ordonnées par position =
 let recurrences = []; // séries de tâches récurrentes (règle + modèle)
 const openWeeks = new Set(); // fiches de semaine dépliées dans l'historique
 const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
+const todoDrafts = new Set(); // cartes dont le prochain commentaire est « à traiter » (par défaut : une note)
 let showLinks = true;
 try { showLinks = localStorage.getItem(LINKS_KEY) !== 'off'; } catch { /* stockage indisponible */ }
 let session = null;
@@ -495,9 +504,13 @@ function taskBodyHTML(t, origin) {
       </div>
       ${showLinks ? cardLinksHTML(t) : ''}
       ${openComments.has(t.id) ? `<ul class="mt-2 space-y-1" data-lot="Lot 10">${taskComments(t.id).map(commentHTML).join('')}</ul>` : ''}
-      <form class="mt-2" data-comment-form="${t.id}" data-lot="Lot 10">
-        <input name="body" autocomplete="off" maxlength="2000" placeholder="Commenter…" aria-label="Ajouter un commentaire à « ${esc(t.task_name)} »"
-          class="w-full px-2 py-1 text-xs rounded-md bg-slate-900/[.04] border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-slate-300 focus:outline-none" />
+      <form class="mt-2 flex items-center gap-1" data-comment-form="${t.id}" data-lot="Lot 10">
+        <input name="body" autocomplete="off" maxlength="2000" placeholder="${todoDrafts.has(t.id) ? 'Point à traiter…' : 'Note…'}" aria-label="Ajouter un commentaire à « ${esc(t.task_name)} »"
+          class="min-w-0 flex-1 px-2 py-1 text-xs rounded-md bg-slate-900/[.04] border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-slate-300 focus:outline-none" />
+        <button type="button" data-comment-mode="${t.id}" data-lot="Lot 20" aria-pressed="${todoDrafts.has(t.id)}"
+          title="Le prochain commentaire sera un point à traiter (case à cocher) plutôt qu’une simple note"
+          class="shrink-0 text-[11px] font-medium rounded-md border border-transparent px-1.5 py-1 text-slate-400 hover:text-slate-700 transition
+                 aria-pressed:bg-amber-100 aria-pressed:text-amber-800 aria-pressed:border-amber-200">À traiter</button>
       </form>`;
 }
 
@@ -532,22 +545,30 @@ const taskComments = (taskId) => comments.filter((c) => c.task_id === taskId);
 
 const BUBBLE = '<svg viewBox="0 0 16 16" aria-hidden="true" class="w-3 h-3 fill-current"><path d="M3 2h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7l-3.5 3v-3H3a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/></svg>';
 
-// Compteur en direct : nombre de commentaires non traités (ambre), sinon total traité (gris).
+// Compteur en direct : commentaires non traités (ambre), sinon total (gris) : « notes » si ce ne sont que des notes.
 function commentBadgeHTML(t) {
-  const all = taskComments(t.id).length;
-  if (!all) return '';
-  const pending = pendingCount(comments, t.id);
+  const { total, notes, pending } = commentCounts(comments, t.id);
+  if (!total) return '';
   const cls = pending ? 'bg-amber-100 text-amber-800 hover:bg-amber-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200';
-  const label = pending ? `${pending} commentaire${pending > 1 ? 's' : ''} non traité${pending > 1 ? 's' : ''}` : `${all} commentaire${all > 1 ? 's' : ''} traité${all > 1 ? 's' : ''}`;
+  const label = pending ? `${pending} commentaire${pending > 1 ? 's' : ''} non traité${pending > 1 ? 's' : ''}`
+    : notes === total ? `${total} note${total > 1 ? 's' : ''}`
+      : `${total} commentaire${total > 1 ? 's' : ''} traité${total > 1 ? 's' : ''}`;
   return `<button type="button" data-comments="${t.id}" aria-expanded="${openComments.has(t.id)}" title="${label}" aria-label="${label}"
-    class="inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 tabular-nums transition ${cls}">${BUBBLE}${pending || all}</button>`;
+    class="inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 tabular-nums transition ${cls}">${BUBBLE}${pending || total}</button>`;
 }
 
+// Une note n'a pas de case à cocher ; un point à traiter oui. Le bouton de droite (au survol) change la nature.
 function commentHTML(c) {
+  const lead = c.is_note
+    ? '<span class="mt-px w-[15px] shrink-0 text-center text-slate-300 leading-none" title="Note" aria-label="Note">•</span>'
+    : `<input type="checkbox" class="chk mt-px" ${c.is_done ? 'checked' : ''} data-comment-toggle="${c.id}" aria-label="Commentaire traité" />`;
+  const kind = c.is_note ? 'à traiter' : 'note';
   return `
-    <li class="group/c flex items-start gap-1.5 text-xs">
-      <input type="checkbox" class="chk mt-px" ${c.is_done ? 'checked' : ''} data-comment-toggle="${c.id}" aria-label="Commentaire traité" />
+    <li class="group/c flex items-start gap-1.5 text-xs" data-lot="Lot 20">
+      ${lead}
       <span class="min-w-0 flex-1 break-words whitespace-pre-line ${c.is_done ? 'line-through text-slate-400' : 'text-slate-700'}">${esc(c.body)}</span>
+      <button type="button" class="opacity-0 group-hover/c:opacity-100 focus-visible:opacity-100 text-[10px] font-medium text-slate-400 hover:text-slate-800 whitespace-nowrap leading-none transition"
+              data-comment-kind="${c.id}" title="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}" aria-label="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}">→ ${kind}</button>
       <button type="button" class="opacity-0 group-hover/c:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 leading-none transition"
               data-delete-comment="${c.id}" title="Supprimer le commentaire" aria-label="Supprimer le commentaire">×</button>
     </li>`;
@@ -966,9 +987,10 @@ $('#board').addEventListener('submit', (e) => {
   let body;
   try { body = parseComment(input.value); } catch (ex) { toast(ex.message, 'error'); return; }
   run(async () => {
-    const [created] = await api('task_comments', '', { method: 'POST', body: { task_id: taskId, body }, prefer: 'return=representation' });
+    const [created] = await api('task_comments', '', { method: 'POST', body: { task_id: taskId, body, is_note: !todoDrafts.has(taskId) }, prefer: 'return=representation' });
     comments.push(created);
     openComments.add(taskId);
+    todoDrafts.delete(taskId); // retour au mode « note » pour le commentaire suivant
     render();
     document.querySelector(`[data-comment-form="${taskId}"] input`)?.focus();
   });
@@ -992,6 +1014,27 @@ function deleteComment(id) {
   run(() => api('task_comments', `?id=eq.${id}`, { method: 'DELETE' }), () => { comments = snapshot; refreshProjectDialog(); });
 }
 
+// Transforme un commentaire en note ou en point à traiter (repart non traité).
+function setCommentKind(id) {
+  const c = comments.find((x) => x.id === id);
+  if (!c) return;
+  const prev = { is_note: c.is_note, is_done: c.is_done };
+  const patch = commentKindPatch(!c.is_note);
+  Object.assign(c, patch);
+  render();
+  refreshProjectDialog();
+  run(() => api('task_comments', `?id=eq.${id}`, { method: 'PATCH', body: patch }), () => { Object.assign(c, prev); refreshProjectDialog(); });
+}
+
+// Suppression et changement de nature d'un commentaire (fiches projet et historique).
+function onCommentEdit(e) {
+  const del = e.target.dataset.deleteComment;
+  if (del) { deleteComment(del); return true; }
+  const kind = e.target.dataset.commentKind;
+  if (kind) { setCommentKind(kind); return true; }
+  return false;
+}
+
 function onCommentAction(e) {
   const toggle = e.target.closest('[data-comments]')?.dataset.comments;
   if (toggle) {
@@ -999,9 +1042,18 @@ function onCommentAction(e) {
     render();
     return true;
   }
-  const del = e.target.dataset.deleteComment;
-  if (del) { deleteComment(del); return true; }
-  return false;
+  // Note / à traiter pour le prochain commentaire : mise à jour sur place (le texte déjà saisi est conservé).
+  const mode = e.target.closest('[data-comment-mode]');
+  if (mode) {
+    const id = mode.dataset.commentMode;
+    if (todoDrafts.has(id)) todoDrafts.delete(id); else todoDrafts.add(id);
+    const todo = todoDrafts.has(id);
+    mode.setAttribute('aria-pressed', String(todo));
+    mode.form.body.placeholder = todo ? 'Point à traiter…' : 'Note…';
+    mode.form.body.focus();
+    return true;
+  }
+  return onCommentEdit(e);
 }
 
 $('#board').addEventListener('change', (e) => {
@@ -1609,10 +1661,7 @@ $('#project-tasks').addEventListener('change', (e) => {
   const id = e.target.dataset.commentToggle;
   if (id) toggleComment(id, e.target.checked);
 });
-$('#project-tasks').addEventListener('click', (e) => {
-  const id = e.target.dataset.deleteComment;
-  if (id) deleteComment(id);
-});
+$('#project-tasks').addEventListener('click', onCommentEdit);
 $('#project-close').addEventListener('click', () => projectDialog.close());
 $('#project-plan').addEventListener('click', () => {
   const p = projects.find((x) => x.id === projectEditForm.dataset.id);
@@ -1821,10 +1870,7 @@ $('#history-view').addEventListener('change', (e) => {
   const id = e.target.dataset.commentToggle;
   if (id) toggleComment(id, e.target.checked);
 });
-$('#history-view').addEventListener('click', (e) => {
-  const id = e.target.dataset.deleteComment;
-  if (id) deleteComment(id);
-});
+$('#history-view').addEventListener('click', onCommentEdit);
 
 // ---------- Clients : liste et fiche (#clients/<id>) ----------
 const initials = (name) => esc(name.trim().slice(0, 2).toUpperCase());
@@ -2593,9 +2639,9 @@ const TOURS = {
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
         content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
-      { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 10',
-        title: 'Commentaires et liens',
-        content: 'Écris un commentaire directement sur une carte (Entrée pour l’ajouter). Le compteur ambre indique les commentaires non traités ; clique dessus pour les cocher. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },
+      { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 20',
+        title: 'Notes et points à traiter',
+        content: 'Écris directement sur une carte (Entrée pour l’ajouter) : c’est une simple note. Active « À traiter » pour créer un point à cocher ; le compteur ambre indique ceux qui restent à traiter. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },
       { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 3',
         title: 'Le sas d’attente',
         content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, son temps passé et le renommer.' },

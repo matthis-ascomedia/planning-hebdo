@@ -428,6 +428,44 @@ describe('commentaires', () => {
     assert.deepEqual(L.finishedWithPending(list, comments).map((x) => [x.task.id, x.count]), [['a', 2]]);
   });
 
+  describe('notes (Lot 20)', () => {
+    const mixed = [
+      { id: 'n1', task_id: 'a', body: 'note', is_note: true, is_done: false },
+      { id: 'n2', task_id: 'a', body: 'à faire', is_note: false, is_done: false },
+      { id: 'n3', task_id: 'a', body: 'fait', is_note: false, is_done: true },
+      { id: 'n4', task_id: 'b', body: 'note', is_note: true, is_done: false },
+      { id: 'n5', task_id: 'c', body: 'ancien', is_done: false }, // avant le Lot 20 : pas de is_note
+    ];
+
+    test('une note n’est jamais « non traitée » ; un commentaire sans is_note reste à traiter', () => {
+      assert.equal(L.pendingCount(mixed, 'a'), 1);
+      assert.equal(L.pendingCount(mixed, 'b'), 0);
+      assert.equal(L.pendingCount(mixed, 'c'), 1);
+    });
+
+    test('pendingByProject ignore les notes', () => {
+      const list = [task({ id: 'a', project_id: 'p1' }), task({ id: 'b', project_id: 'p1' }), task({ id: 'c', project_id: 'p2' })];
+      assert.equal(L.pendingByProject(mixed, list, 'p1'), 1);
+      assert.equal(L.pendingByProject(mixed, list, 'p2'), 1);
+    });
+
+    test('finishedWithPending : une tâche terminée n’ayant que des notes n’avertit pas', () => {
+      const list = [task({ id: 'a', is_completed: true }), task({ id: 'b', is_completed: true })];
+      assert.deepEqual(L.finishedWithPending(list, mixed).map((x) => [x.task.id, x.count]), [['a', 1]]);
+    });
+
+    test('commentCounts : total, notes et à traiter d’une tâche', () => {
+      assert.deepEqual(L.commentCounts(mixed, 'a'), { total: 3, notes: 1, pending: 1 });
+      assert.deepEqual(L.commentCounts(mixed, 'b'), { total: 1, notes: 1, pending: 0 });
+      assert.deepEqual(L.commentCounts(mixed, 'zz'), { total: 0, notes: 0, pending: 0 });
+    });
+
+    test('commentKindPatch : bascule note / à traiter, toujours repartir non traité', () => {
+      assert.deepEqual(L.commentKindPatch(true), { is_note: true, is_done: false });
+      assert.deepEqual(L.commentKindPatch(false), { is_note: false, is_done: false });
+    });
+  });
+
   test('parseComment : texte nettoyé, vide refusé, longueur bornée', () => {
     assert.equal(L.parseComment('  À relire  '), 'À relire');
     assert.throws(() => L.parseComment('   '), /vide/);

@@ -355,13 +355,24 @@
     return history.filter((t) => t.week_id === week.id || (!t.week_id && new Date(t.archived_at).getTime() === at));
   }
 
-  // Commentaires de tâche : non traités d'une tâche, d'un projet (toutes ses tâches, archivées comprises).
-  const pendingCount = (comments, taskId) => comments.filter((c) => c.task_id === taskId && !c.is_done).length;
+  // Commentaires de tâche : une note (is_note) se lit sans être traitée ; seul un commentaire « à traiter »
+  // non coché est en attente. Non traités d'une tâche, d'un projet (toutes ses tâches, archivées comprises).
+  const isPending = (c) => !c.is_note && !c.is_done;
+  const pendingCount = (comments, taskId) => comments.filter((c) => c.task_id === taskId && isPending(c)).length;
 
   function pendingByProject(comments, tasks, projectId) {
     const ids = new Set(tasks.filter((t) => t.project_id === projectId).map((t) => t.id));
-    return comments.filter((c) => ids.has(c.task_id) && !c.is_done).length;
+    return comments.filter((c) => ids.has(c.task_id) && isPending(c)).length;
   }
+
+  // Compteurs d'une tâche : tous les commentaires, dont notes et à traiter.
+  function commentCounts(comments, taskId) {
+    const own = comments.filter((c) => c.task_id === taskId);
+    return { total: own.length, notes: own.filter((c) => c.is_note).length, pending: own.filter(isPending).length };
+  }
+
+  // Champs modifiés quand un commentaire devient une note ou un point à traiter (repart non traité).
+  const commentKindPatch = (isNote) => ({ is_note: !!isNote, is_done: false });
 
   // Tâches terminées qui vont être archivées alors qu'elles ont des commentaires non traités.
   const finishedWithPending = (tasks, comments) => tasks
@@ -505,6 +516,6 @@
     comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
-    pendingCount, pendingByProject, finishedWithPending, parseComment, linksOf,
+    pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };
 }));
