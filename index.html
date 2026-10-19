@@ -502,6 +502,31 @@
     </div>
   </dialog>
 
+  <!-- Consigner une tâche terminée : archivage immédiat avec le temps passé -->
+  <dialog id="consign-dialog" aria-labelledby="consign-title" data-lot="Lot 23"
+    class="m-auto w-[92vw] max-w-sm rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <form id="consign-form" class="p-5 space-y-3">
+      <div>
+        <h2 id="consign-title" class="text-base font-semibold tracking-tight">Consigner la tâche</h2>
+        <p class="text-sm text-slate-500 truncate">« <span id="consign-task"></span> »</p>
+      </div>
+      <p class="text-xs text-slate-500">Elle quitte le planning tout de suite et rejoint les archives ; elle sera comptée dans la prochaine semaine close.</p>
+      <label class="block">
+        <span class="block text-xs text-slate-500 mb-1">Temps passé (h) <span id="consign-planned" class="text-slate-400"></span></span>
+        <input name="actual_hours" type="number" min="0" step="0.25" inputmode="decimal" aria-label="Temps passé, en heures"
+          class="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+      </label>
+      <p id="consign-pending" class="hidden text-xs rounded-lg bg-amber-50 text-amber-800 px-3 py-2"></p>
+      <p id="consign-error" class="hidden text-sm text-red-700"></p>
+      <div class="flex justify-end gap-2 pt-1">
+        <button type="button" id="consign-cancel"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+        <button type="submit"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Consigner</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Confirmation commune (remplace les confirm() natifs) -->
   <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message" data-lot="Lot 12"
     class="m-auto w-[92vw] max-w-sm rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">

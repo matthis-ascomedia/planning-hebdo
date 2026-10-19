@@ -9,7 +9,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
   comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel,
-  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
@@ -27,6 +27,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.23.0', type: 'mineure', lot: 'Lot 23', date: '2026-10-19',
+    items: [
+      'Bouton « Consigner » sur une tâche terminée : saisis le temps réellement passé (pré-rempli avec les heures prévues), la tâche quitte le planning tout de suite pour les archives.',
+      'Archives : nouvelle section « Tâches consignées » (prévu / passé, date, semaine) avec « Rétablir » tant que la semaine n’est pas close ; « Annuler » est aussi proposé juste après.',
+      '« Nouvelle Semaine » compte les tâches consignées depuis la dernière clôture dans la semaine enregistrée (historique, temps par client).',
+    ],
+  },
   {
     version: '1.22.0', type: 'mineure', lot: 'Lot 22', date: '2026-10-19',
     items: [
@@ -518,6 +526,8 @@ function taskBodyHTML(t, origin) {
         ${labelChipsHTML(t)}
         ${recurrenceBadgeHTML(t)}
         ${commentBadgeHTML(t)}
+        ${canConsign(t) ? `<button type="button" data-consign="${t.id}" data-lot="Lot 23" title="Consigner : archiver tout de suite, avec le temps passé"
+          class="text-[11px] font-medium rounded px-1.5 py-0.5 border border-slate-300 bg-white text-slate-700 hover:bg-slate-900 hover:text-white hover:border-slate-900 transition">Consigner</button>` : ''}
       </div>
       ${showLinks ? cardLinksHTML(t) : ''}
       ${openComments.has(t.id) ? `<ul class="mt-2 space-y-1" data-lot="Lot 10">${taskComments(t.id).map(commentHTML).join('')}</ul>` : ''}
@@ -827,19 +837,20 @@ $('#sas-view').addEventListener('click', (e) => {
   renderWaiting();
 });
 
-// Page Archives : projets terminés, groupés par client.
+// Page Archives : projets terminés (groupés par client) et tâches consignées (Lot 23).
 function renderArchives() {
   const done = projects.filter((p) => p.status === 'termine');
-  $('#archives-count').textContent = done.length;
+  const consigned = consignedTasks(history);
+  $('#archives-count').textContent = done.length + consigned.length;
   const byClient = new Map();
   done.forEach((p) => {
     if (!byClient.has(p.clients.name)) byClient.set(p.clients.name, []);
     byClient.get(p.clients.name).push(p);
   });
-  $('#archives-list').innerHTML = done.length
+  const projectsHTML = done.length
     ? [...byClient].sort((a, b) => a[0].localeCompare(b[0])).map(([client, list]) => `
         <section>
-          <h3 class="text-sm font-semibold mb-2">${esc(client)}</h3>
+          <h4 class="text-sm font-semibold mb-2">${esc(client)}</h4>
           <ul class="flex flex-col gap-2">
             ${list.map((p) => {
               const n = tasks.concat(history).filter((t) => t.project_id === p.id).length;
@@ -854,6 +865,32 @@ function renderArchives() {
           </ul>
         </section>`).join('')
     : '<p class="text-sm text-slate-400">Aucun projet archivé pour le moment.</p>';
+  const consignedHTML = consigned.length
+    ? `<ul class="flex flex-col gap-2">${consigned.map((t) => {
+        const week = weeks.find((w) => w.id === t.week_id);
+        const spent = hoursSpent(t);
+        return `
+          <li class="flex flex-wrap items-center gap-x-3 gap-y-1 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
+            <span class="min-w-0 flex-1 basis-48">
+              <span class="block text-xs text-slate-500 truncate">${esc(taskClient(t))} · ${esc(taskProject(t))}</span>
+              <span class="block text-sm font-medium truncate">${esc(t.task_name)}</span>
+            </span>
+            <span class="text-xs text-slate-600 tabular-nums" title="Heures prévues puis temps passé">${fmtH(t.estimated_hours)} prévues · <span class="font-medium ${spent > (+t.estimated_hours || 0) ? 'text-amber-700' : ''}">${fmtH(spent)} passées</span></span>
+            <span class="text-xs text-slate-500">${esc(fmtDate(t.consigned_at, SHORT_DATE))} · ${week ? `semaine close le ${esc(fmtDate(week.closed_at, SHORT_DATE))}` : 'prochaine semaine'}</span>
+            ${canUnconsign(t) ? `<button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
+                    data-unconsign="${t.id}" title="Remettre la tâche dans le planning">Rétablir</button>` : ''}
+          </li>`;
+      }).join('')}</ul>`
+    : '<p class="text-sm text-slate-400">Aucune tâche consignée : « Consigner » apparaît sur une tâche terminée du planning.</p>';
+  $('#archives-list').innerHTML = `
+    <section class="space-y-3" data-lot="Lot 2">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Projets archivés <span class="ml-1 font-medium tabular-nums">${done.length}</span></h3>
+      <div class="space-y-5">${projectsHTML}</div>
+    </section>
+    <section class="space-y-3" data-lot="Lot 23">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Tâches consignées <span class="ml-1 font-medium tabular-nums">${consigned.length}</span></h3>
+      ${consignedHTML}
+    </section>`;
 }
 
 // Navigation par onglets (hash) : une vue #<nom>-view par onglet.
@@ -1118,6 +1155,8 @@ $('#board').addEventListener('change', (e) => {
 // Édition / suppression : cartes du planning et tâches rangées dans le sas
 function onTaskAction(e) {
   if (onCommentAction(e)) return;
+  const consign = e.target.closest('[data-consign]')?.dataset.consign;
+  if (consign) return openConsign(consign);
   const editId = e.target.dataset.edit;
   if (editId) return openEdit(editId);
   const dup = e.target.closest('[data-duplicate]')?.dataset.duplicate;
@@ -1171,6 +1210,65 @@ $('#duplicate-targets').addEventListener('click', (e) => {
 });
 $('#duplicate-cancel').addEventListener('click', () => duplicateDialog.close());
 duplicateDialog.addEventListener('click', (e) => { if (e.target === duplicateDialog) duplicateDialog.close(); });
+
+// Consigner (Lot 23) : une tâche terminée est archivée tout de suite, avec le temps réellement passé.
+const consignDialog = $('#consign-dialog');
+const consignForm = $('#consign-form');
+
+function openConsign(id) {
+  const t = tasks.find((x) => x.id === id);
+  if (!t || !canConsign(t)) return;
+  consignForm.dataset.id = id;
+  $('#consign-task').textContent = t.task_name;
+  $('#consign-planned').textContent = `(prévu : ${fmtH(t.estimated_hours)})`;
+  consignForm.actual_hours.value = t.actual_hours ?? t.estimated_hours;
+  const n = pendingCount(comments, id);
+  const warn = $('#consign-pending');
+  warn.textContent = n ? `${plural(n, 'commentaire')} non traité${n > 1 ? 's' : ''} : ${n > 1 ? 'ils resteront visibles' : 'il restera visible'} dans le détail du projet.` : '';
+  warn.classList.toggle('hidden', !n);
+  $('#consign-error').classList.add('hidden');
+  consignDialog.showModal();
+  consignForm.actual_hours.select();
+}
+
+consignForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const err = $('#consign-error');
+  err.classList.add('hidden');
+  const t = tasks.find((x) => x.id === consignForm.dataset.id);
+  if (!t) { consignDialog.close(); return; }
+  let hours;
+  try { hours = parseOptionalHours(consignForm.actual_hours.value); } catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); return; }
+  const patch = consignPatch(hours, new Date().toISOString());
+  const before = { actual_hours: t.actual_hours ?? null, consigned_at: null, archived_at: null, is_completed: true };
+  consignDialog.close();
+  tasks = tasks.filter((x) => x.id !== t.id);
+  Object.assign(t, patch);
+  history = [t, ...history];
+  render();
+  run(
+    async () => {
+      await db.update(t.id, patch);
+      toast(`« ${t.task_name} » consignée`, 'success', { label: 'Annuler', run: () => unconsignTask(t.id) });
+    },
+    () => { history = history.filter((x) => x.id !== t.id); Object.assign(t, before); tasks.push(t); }
+  );
+});
+$('#consign-cancel').addEventListener('click', () => consignDialog.close());
+consignDialog.addEventListener('click', (e) => { if (e.target === consignDialog) consignDialog.close(); });
+
+// Rétablir une tâche consignée dans le planning, tant que la semaine qui la compte n'est pas close.
+function unconsignTask(id) {
+  const t = history.find((x) => x.id === id);
+  if (!t || !canUnconsign(t)) return;
+  const before = { archived_at: t.archived_at, consigned_at: t.consigned_at };
+  const patch = unconsignPatch();
+  history = history.filter((x) => x.id !== id);
+  Object.assign(t, patch);
+  tasks.push(t);
+  render();
+  run(() => db.update(id, patch), () => { tasks = tasks.filter((x) => x.id !== id); Object.assign(t, before); history = [t, ...history]; });
+}
 
 // Retire une tâche du planning : elle retourne dans le dossier de son projet (sas), projet rouvert si besoin.
 function unplanTask(id) {
@@ -1395,7 +1493,8 @@ function prefillAdd(project, day) {
 function startNewWeek(keepIds = []) {
   const now = new Date();
   const archivedAt = now.toISOString();
-  const stats = weekSnapshot(tasks, keepIds);
+  const waitingConsigned = consignedPending(history); // consignées depuis la dernière clôture : comptées dans cette semaine
+  const stats = weekSnapshot(tasks, keepIds, waitingConsigned);
   // Occurrences récurrentes non terminées : elles restent sur leur jour.
   const stayIds = tasks.filter((t) => !t.is_completed && t.day_of_week && activeSeriesOf(t)).map((t) => t.id);
   const next = newWeek(tasks, history, archivedAt, keepIds, stayIds);
@@ -1415,16 +1514,18 @@ function startNewWeek(keepIds = []) {
   let week = null;
   run(
     async () => {
-      if (next.finished) {
+      if (next.finished || waitingConsigned.length) {
         [week] = await api('weeks', '', { method: 'POST', body: { closed_at: archivedAt, ...stats }, prefer: 'return=representation' });
         try {
           await api('tasks', `?is_completed=eq.true&archived_at=is.null${keep}`, { method: 'PATCH', body: { archived_at: archivedAt, week_id: week.id } });
+          if (waitingConsigned.length) await api('tasks', '?consigned_at=not.is.null&week_id=is.null', { method: 'PATCH', body: { week_id: week.id } });
         } catch (ex) { // tâches non archivées : la semaine enregistrée n'a plus lieu d'être
           await api('weeks', `?id=eq.${week.id}`, { method: 'DELETE' }).catch(() => {});
           throw ex;
         }
         weeks = [week, ...weeks];
         history.forEach((t) => { if (t.archived_at === archivedAt) t.week_id = week.id; });
+        waitingConsigned.forEach((t) => { t.week_id = week.id; });
         render();
       }
       if (next.moving) {
@@ -1455,11 +1556,13 @@ let weekPending = [];
 $('#new-week').addEventListener('click', () => {
   weekPending = finishedWithPending(tasks, comments);
   const finished = tasks.filter((t) => t.is_completed).length;
+  const consigned = consignedPending(history).length;
   if (!weekPending.length) {
-    const question = finished
-      ? `Nouvelle semaine : archiver ${finished} tâche(s) terminée(s), enregistrer la semaine dans l'historique et ramener les autres sur Lundi ?`
+    const recorded = finished || consigned;
+    const question = recorded
+      ? `Nouvelle semaine : archiver ${finished} tâche(s) terminée(s)${consigned ? ` et compter ${consigned} tâche(s) déjà consignée(s)` : ''}, enregistrer la semaine dans l'historique et ramener les autres sur Lundi ?`
       : 'Aucune tâche terminée : rien à archiver, aucune semaine ne sera enregistrée. Ramener les tâches planifiées sur Lundi ?';
-    askConfirm({ title: 'Nouvelle semaine', message: question, confirmLabel: finished ? 'Archiver et continuer' : 'Ramener sur Lundi' })
+    askConfirm({ title: 'Nouvelle semaine', message: question, confirmLabel: recorded ? 'Archiver et continuer' : 'Ramener sur Lundi' })
       .then((ok) => { if (ok) startNewWeek(); });
     return;
   }
@@ -1821,6 +1924,8 @@ function reopenProject(id) {
 [$('#archives-view'), $('#clients-view')].forEach((view) => view.addEventListener('click', (e) => {
   const reopen = e.target.dataset.reopen;
   if (reopen) return reopenProject(reopen);
+  const unconsign = e.target.dataset.unconsign;
+  if (unconsign) return unconsignTask(unconsign);
   const open = e.target.closest('[data-open-project]')?.dataset.openProject;
   if (open) openProject(open);
 }));
@@ -2722,9 +2827,9 @@ const TOURS = {
       { id: 'clients', targetSelector: '#tab-clients', placement: 'bottom', lot: 'Lot 8',
         title: 'Les clients',
         content: 'Chaque client a sa fiche : logo, site web et projets rattachés. Dans le détail d’un projet, ajoute l’année, le devis et des liens d’accès rapide.' },
-      { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 2',
+      { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 23',
         title: 'Les archives',
-        content: 'Les projets archivés depuis le sas sont rangés dans cet onglet. Tu peux les rouvrir à tout moment.' },
+        content: 'Les projets archivés depuis le sas sont rangés dans cet onglet ; tu peux les rouvrir à tout moment. Une tâche terminée peut aussi être « consignée » avec son temps passé : elle apparaît ici tout de suite.' },
       { id: 'settings', targetSelector: '#tab-settings', placement: 'bottom', lot: 'Lot 13',
         title: 'Les réglages',
         content: 'Définis ici les types de projet par défaut et leur ordre. Ils sont proposés en premier dans le détail d’un projet, avant les types saisis librement.' },

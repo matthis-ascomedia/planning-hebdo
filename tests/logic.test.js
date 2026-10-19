@@ -164,6 +164,67 @@ describe('temps effectif (Lot 22)', () => {
   });
 });
 
+describe('consigner une tâche (Lot 23)', () => {
+  const NOW = '2026-10-19T09:30:00.000Z';
+
+  test('canConsign : seulement une tâche terminée et encore active', () => {
+    assert.equal(L.canConsign(task({ is_completed: true })), true);
+    assert.equal(L.canConsign(task({ is_completed: false })), false);
+    assert.equal(L.canConsign(task({ is_completed: true, archived_at: NOW })), false);
+  });
+
+  test('consignPatch : archivée tout de suite, datée, avec le temps passé saisi', () => {
+    assert.deepEqual(L.consignPatch(4.5, NOW), { actual_hours: 4.5, consigned_at: NOW, archived_at: NOW, is_completed: true });
+  });
+
+  test('consignPatch : sans temps saisi, le temps passé reste vide (heures prévues)', () => {
+    assert.equal(L.consignPatch(null, NOW).actual_hours, null);
+  });
+
+  test('consignedTasks : tâches consignées, la plus récente d’abord ; les archives de semaine n’en font pas partie', () => {
+    const history = [
+      task({ id: 'a', archived_at: '2026-10-09T10:00:00Z', week_id: 'w1' }),
+      task({ id: 'b', archived_at: '2026-10-12T10:00:00Z', consigned_at: '2026-10-12T10:00:00Z' }),
+      task({ id: 'c', archived_at: '2026-10-15T10:00:00Z', consigned_at: '2026-10-15T10:00:00Z', week_id: 'w2' }),
+    ];
+    assert.deepEqual(L.consignedTasks(history).map((t) => t.id), ['c', 'b']);
+  });
+
+  test('consignedPending : consignées qui attendent encore la prochaine « Nouvelle Semaine »', () => {
+    const history = [
+      task({ id: 'b', consigned_at: '2026-10-12T10:00:00Z', archived_at: '2026-10-12T10:00:00Z' }),
+      task({ id: 'c', consigned_at: '2026-10-15T10:00:00Z', archived_at: '2026-10-15T10:00:00Z', week_id: 'w2' }),
+      task({ id: 'd', archived_at: '2026-10-09T10:00:00Z', week_id: 'w1' }),
+    ];
+    assert.deepEqual(L.consignedPending(history).map((t) => t.id), ['b']);
+  });
+
+  test('canUnconsign / unconsignPatch : rétablir tant que la semaine n’est pas close', () => {
+    assert.equal(L.canUnconsign(task({ consigned_at: NOW, archived_at: NOW })), true);
+    assert.equal(L.canUnconsign(task({ consigned_at: NOW, archived_at: NOW, week_id: 'w1' })), false);
+    assert.equal(L.canUnconsign(task({ archived_at: NOW, week_id: 'w1' })), false);
+    assert.deepEqual(L.unconsignPatch(), { archived_at: null, consigned_at: null });
+  });
+
+  test('weekSnapshot : les consignées en attente comptent dans la semaine qui se clôt', () => {
+    const tasks = [
+      task({ id: 'a', is_completed: true, estimated_hours: 2, client_name: 'Acme' }),
+      task({ id: 'o', is_completed: false, day_of_week: 'Mardi', estimated_hours: 1, client_name: 'Acme' }),
+    ];
+    const consigned = [task({ id: 'c', is_completed: true, estimated_hours: 3, client_name: 'Beta', consigned_at: NOW, archived_at: NOW })];
+    const snap = L.weekSnapshot(tasks, [], consigned);
+    assert.equal(snap.finished_count, 2);
+    assert.equal(snap.finished_hours, 5);
+    assert.equal(snap.carried_count, 1);
+    assert.deepEqual(snap.by_client.map((c) => [c.client, c.count, c.hours]), [['Beta', 1, 3], ['Acme', 1, 2]]);
+  });
+
+  test('weekSnapshot : sans consignées, comportement inchangé', () => {
+    const tasks = [task({ is_completed: true, estimated_hours: 2, client_name: 'Acme' })];
+    assert.deepEqual(L.weekSnapshot(tasks, []), L.weekSnapshot(tasks, [], []));
+  });
+});
+
 describe('newWeek', () => {
   const at = '2026-10-12T08:00:00.000Z';
 

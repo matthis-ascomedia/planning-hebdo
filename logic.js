@@ -344,9 +344,10 @@
 
   // Instantané enregistré à « Nouvelle Semaine » (avant archivage) : tâches terminées archivées,
   // tâches planifiées reportées (gardées comprises ; le sas n'est ni l'un ni l'autre), répartition par client.
-  function weekSnapshot(tasks, keepIds = []) {
+  // `consigned` : tâches consignées en attente de cette clôture (Lot 23), comptées comme terminées de la semaine.
+  function weekSnapshot(tasks, keepIds = [], consigned = []) {
     const kept = new Set(keepIds);
-    const finished = tasks.filter((t) => t.is_completed && !kept.has(t.id));
+    const finished = tasks.filter((t) => t.is_completed && !kept.has(t.id)).concat(consigned);
     const carried = tasks.filter((t) => t.day_of_week && !(t.is_completed && !kept.has(t.id)));
     const byClient = new Map();
     finished.forEach((t) => {
@@ -370,6 +371,17 @@
     const asc = [...weeks].sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at));
     return asc.map((w, i) => ({ ...w, from: i ? asc[i - 1].closed_at : null })).reverse();
   }
+
+  // ---- Consigner une tâche (Lot 23) ----
+  // Une tâche terminée peut être consignée sans attendre « Nouvelle Semaine » : elle est archivée aussitôt, avec son
+  // temps passé, et rejoint la semaine qui sera close ensuite (week_id vide d'ici là).
+  const canConsign = (t) => !!t.is_completed && !t.archived_at;
+  const consignPatch = (actualHours, nowIso) => ({ actual_hours: actualHours, consigned_at: nowIso, archived_at: nowIso, is_completed: true });
+  const consignedTasks = (history) => history.filter((t) => t.consigned_at)
+    .sort((a, b) => new Date(b.consigned_at) - new Date(a.consigned_at));
+  const consignedPending = (history) => history.filter((t) => t.consigned_at && !t.week_id);
+  const canUnconsign = (t) => !!t.consigned_at && !t.week_id;
+  const unconsignPatch = () => ({ archived_at: null, consigned_at: null });
 
   // Tâches archivées d'une semaine : rattachées par week_id, ou (reprise) par date d'archivage identique.
   function weekTasks(history, week) {
@@ -536,7 +548,7 @@
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
     comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
-    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };
