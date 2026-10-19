@@ -9,7 +9,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
   comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel,
-  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
@@ -27,6 +27,15 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.22.0', type: 'mineure', lot: 'Lot 22', date: '2026-10-19',
+    items: [
+      'Temps estimé d’un projet : à renseigner (facultatif) à sa création, dans le sas ou à l’ajout d’une tâche d’un nouveau projet, et modifiable dans son détail.',
+      'Temps effectif : un champ « Temps passé » (facultatif) dans la modale de modification d’une tâche. Sans valeur, ses heures prévues comptent, comme avant.',
+      'Sas d’attente : chaque projet affiche « effectif / estimé » avec une barre d’avancement, en ambre quand l’estimé est dépassé.',
+      'Détail d’un projet : quatre chiffres (tâches, planifié, estimé, effectif).',
+    ],
+  },
   {
     version: '1.21.0', type: 'mineure', lot: 'Lot 21', date: '2026-10-19',
     items: [
@@ -297,7 +306,8 @@ const db = {
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
-async function ensureProject(clientName, projectName) {
+// `hours` : temps estimé du projet, appliqué seulement s'il est créé ici (Lot 22).
+async function ensureProject(clientName, projectName, hours = null) {
   const cName = clientName.trim() || DEFAULT_CLIENT;
   const pName = projectName.trim() || DEFAULT_PROJECT;
   const found = projects.find((p) => same(p.name, pName) && same(p.clients.name, cName));
@@ -308,7 +318,7 @@ async function ensureProject(clientName, projectName) {
     clients.push(client);
   }
   const [project] = await api('projects', `?select=${PROJECT_SELECT}`, {
-    method: 'POST', body: { client_id: client.id, name: pName }, prefer: 'return=representation',
+    method: 'POST', body: { client_id: client.id, name: pName, ...(hours != null ? { estimated_hours: hours } : {}) }, prefer: 'return=representation',
   });
   projects.push(project);
   return project;
@@ -652,6 +662,7 @@ function render() {
   renderSettings();
   $('#clients-list').innerHTML = clients.map((c) => `<option value="${esc(c.name)}"></option>`).join('');
   fillProjectList($('#add-form').client_name.value);
+  syncProjectEstimate($('#add-form'));
 }
 
 // Suggestions de projets (datalist partagée) : ceux du client saisi d'abord (en cours, puis terminés), puis les autres.
@@ -663,6 +674,7 @@ document.addEventListener('focusin', (e) => {
   if (e.target.matches?.('input[list="projects-list"]')) fillProjectList(e.target.form?.client_name?.value);
 });
 document.addEventListener('input', (e) => {
+  if (e.target.form?.id === 'add-form' && (e.target.name === 'client_name' || e.target.name === 'project_name')) syncProjectEstimate(e.target.form);
   if (e.target.name === 'client_name' && e.target.form?.project_name?.getAttribute('list') === 'projects-list') fillProjectList(e.target.value);
 });
 
@@ -704,10 +716,25 @@ function folderHTML(p, { showClient }) {
         <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"
                 title="Archiver le projet (terminé)">Archiver</button>
       </div>
+      ${budgetHTML(p)}
       <div class="mt-2 flex flex-col gap-1.5">
         ${list.length ? list.map(parkedHTML).join('') : '<p class="text-xs text-slate-400">Aucune tâche rangée.</p>'}
       </div>
     </li>`;
+}
+
+// Temps effectif / estimé d'un projet du sas : « 12 h / 40 h » et une fine barre (ambre au-delà de l'estimé).
+function budgetHTML(p) {
+  const spent = projectTime(tasks, history, p.id).spent;
+  const b = budgetStatus(p.estimated_hours, spent);
+  if (!b) return spent ? `<p class="mt-1.5 text-[11px] text-slate-500 tabular-nums" data-lot="Lot 22" title="Temps effectif (aucun estimé renseigné)">${fmtH(spent)}</p>` : '';
+  const tone = b.over ? 'bg-amber-500' : 'bg-slate-900';
+  return `
+      <div class="mt-1.5" data-lot="Lot 22" title="Temps effectif / temps estimé${b.over ? ' : estimé dépassé' : ''}">
+        <p class="text-[11px] tabular-nums ${b.over ? 'font-medium text-amber-700' : 'text-slate-500'}">${fmtH(b.spent)} / ${fmtH(b.estimated)}</p>
+        <div class="mt-0.5 h-1 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${b.pct}"
+             aria-label="Avancement du temps effectif sur l’estimé"><div class="h-full rounded-full ${tone}" style="width:${b.pct}%"></div></div>
+      </div>`;
 }
 
 function projectPendingHTML(p) {
@@ -851,11 +878,14 @@ $('#add-form').addEventListener('submit', (e) => {
   const f = e.target;
   let meeting;
   let recurrence;
+  let projectHours = null;
   try {
     meeting = meetingInput(f);
     recurrence = recurrenceInput(f);
+    if (!f.querySelector('[data-project-estimate]').classList.contains('hidden')) projectHours = parseOptionalHours(f.project_hours.value);
   } catch (ex) { showError(ex.message); return; }
   const draft = {
+    project_hours: projectHours,
     client: f.client_name.value,
     project: f.project_name.value,
     task_name: f.task_name.value.trim(),
@@ -869,7 +899,7 @@ $('#add-form').addEventListener('submit', (e) => {
   // Tâche ajoutée directement dans le sas : on demande dans quel projet la ranger.
   if (!draft.day_of_week) return openAssign(draft);
   run(async () => {
-    await createTask(await ensureProject(draft.client, draft.project), draft);
+    await createTask(await ensureProject(draft.client, draft.project, draft.project_hours), draft);
     resetAddForm();
   });
 });
@@ -878,12 +908,22 @@ function resetAddForm() {
   const f = $('#add-form');
   f.task_name.value = '';
   f.estimated_hours.value = '';
+  f.project_hours.value = '';
   f.start_time.value = '';
   f.meeting_url.value = '';
   renderLabelPicker(f, []);
   f.recurrence.value = '';
   syncRecurrenceFields(f);
+  syncProjectEstimate(f);
   f.task_name.focus();
+}
+
+// Le champ « temps estimé » n'apparaît que si client + projet saisis n'existent pas encore (projet créé à l'ajout).
+function syncProjectEstimate(form) {
+  const client = form.client_name.value.trim();
+  const project = form.project_name.value.trim();
+  const isNew = !!client && !!project && !projects.some((p) => same(p.name, project) && same(p.clients.name, client));
+  form.querySelector('[data-project-estimate]').classList.toggle('hidden', !isNew);
 }
 
 async function createTask(project, draft) {
@@ -969,7 +1009,7 @@ assignForm.addEventListener('submit', async (e) => {
     let project;
     if (target === 'new') {
       if (!f.new_project.value.trim()) throw new Error('Le nom du projet est obligatoire.');
-      project = await ensureProject(f.new_client.value, f.new_project.value);
+      project = await ensureProject(f.new_client.value, f.new_project.value, draft.project_hours);
     } else {
       project = projects.find((x) => x.id === target);
     }
@@ -1497,6 +1537,7 @@ function openEdit(id) {
   editForm.project_name.value = taskProject(t);
   editForm.task_name.value = t.task_name;
   editForm.estimated_hours.value = t.estimated_hours;
+  editForm.actual_hours.value = t.actual_hours ?? '';
   editForm.day_of_week.value = t.day_of_week ?? '';
   editForm.start_time.value = t.start_time ?? '';
   editForm.meeting_url.value = t.meeting_url ?? '';
@@ -1539,6 +1580,7 @@ editForm.addEventListener('submit', async (e) => {
       project_name: project.name,
       task_name: f.task_name.value.trim(),
       estimated_hours: parseFloat(f.estimated_hours.value) || 0,
+      actual_hours: parseOptionalHours(f.actual_hours.value),
       day_of_week: f.day_of_week.value || null,
       ...((f.day_of_week.value || null) !== t.day_of_week ? { group_rank: null } : {}),
     };
@@ -1618,6 +1660,7 @@ function openProject(id, { keepForm = false } = {}) {
     projectEditForm.project_name.value = p.name;
     projectEditForm.year.value = p.year ?? '';
     projectEditForm.type.value = p.type ?? '';
+    projectEditForm.estimated_hours.value = p.estimated_hours ?? '';
     fillTypeList();
     projectEditForm.quote_label.value = p.quote_label ?? '';
     projectEditForm.quote_url.value = p.quote_url ?? '';
@@ -1630,8 +1673,9 @@ function openProject(id, { keepForm = false } = {}) {
   const time = projectTime(tasks, history, id);
   $('#project-stats').innerHTML = `
     <div><dt class="text-xs text-slate-500">Tâches</dt><dd class="text-sm font-semibold">${time.count}</dd></div>
-    <div><dt class="text-xs text-slate-500">Temps prévu</dt><dd class="text-sm font-semibold">${fmtH(time.planned)}</dd></div>
-    <div><dt class="text-xs text-slate-500">Temps passé</dt><dd class="text-sm font-semibold">${fmtH(time.spent)}</dd></div>`;
+    <div data-lot="Lot 22"><dt class="text-xs text-slate-500">Planifié</dt><dd class="text-sm font-semibold">${fmtH(time.planned)}</dd></div>
+    <div data-lot="Lot 22"><dt class="text-xs text-slate-500">Estimé</dt><dd class="text-sm font-semibold">${p.estimated_hours == null ? '—' : fmtH(p.estimated_hours)}</dd></div>
+    <div data-lot="Lot 22"><dt class="text-xs text-slate-500">Effectif</dt><dd class="text-sm font-semibold ${budgetStatus(p.estimated_hours, time.spent)?.over ? 'text-amber-700' : ''}">${fmtH(time.spent)}</dd></div>`;
   const row = (t, status) => {
     const list = taskComments(t.id);
     return `
@@ -1640,7 +1684,8 @@ function openProject(id, { keepForm = false } = {}) {
         <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
         ${labelChipsHTML(t)}
         <span class="text-xs text-slate-500">${esc(status)}</span>
-        <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+        <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}${t.actual_hours != null && +t.actual_hours !== +t.estimated_hours
+          ? ` <span class="${+t.actual_hours > +t.estimated_hours ? 'text-amber-700' : 'text-slate-500'}" title="Temps passé" data-lot="Lot 22">→ ${fmtH(t.actual_hours)}</span>` : ''}</span>
       </div>
       ${list.length ? `<ul class="mt-1 pl-3 space-y-1" data-lot="Lot 10">${list.map(commentHTML).join('')}</ul>` : ''}
     </li>`;
@@ -1743,7 +1788,7 @@ projectEditForm.addEventListener('submit', async (e) => {
     const quoteUrl = normalizeUrl(f.quote_url.value);
     const quoteLabel = f.quote_label.value.trim();
     if (quoteLabel && !quoteUrl) throw new Error('Renseigne le lien du devis.');
-    const patch = { name, year, type: canonicalType(f.type.value), quote_label: quoteUrl ? quoteLabel : null, quote_url: quoteUrl || null };
+    const patch = { name, year, estimated_hours: parseOptionalHours(f.estimated_hours.value), type: canonicalType(f.type.value), quote_label: quoteUrl ? quoteLabel : null, quote_url: quoteUrl || null };
     await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: patch });
     if (name !== p.name) {
       await api('tasks', `?project_id=eq.${p.id}`, { method: 'PATCH', body: { project_name: name } });
@@ -1783,11 +1828,18 @@ function reopenProject(id) {
 $('#project-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
+  let hours;
+  try { hours = parseOptionalHours(f.estimated_hours.value); } catch (ex) { toast(ex.message, 'error'); return; }
   run(async () => {
-    const p = await ensureProject(f.client_name.value, f.project_name.value);
+    const p = await ensureProject(f.client_name.value, f.project_name.value, hours);
     if (p.status !== 'en_cours') {
       await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: { status: 'en_cours' } });
       p.status = 'en_cours';
+    }
+    // Projet déjà connu mais sans estimé : l'estimé saisi lui est attribué.
+    if (hours != null && p.estimated_hours == null) {
+      await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: { estimated_hours: hours } });
+      p.estimated_hours = hours;
     }
     f.reset();
     render();
@@ -2658,9 +2710,9 @@ const TOURS = {
       { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 20',
         title: 'Notes et points à traiter',
         content: 'Écris directement sur une carte (Entrée pour l’ajouter) : c’est une simple note. Active « À traiter » pour créer un point à cocher ; le compteur ambre indique ceux qui restent à traiter. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },
-      { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 3',
+      { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 22',
         title: 'Le sas d’attente',
-        content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, son temps passé et le renommer.' },
+        content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées et leur temps effectif face au temps estimé. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, régler son estimé et le renommer.' },
       { id: 'sas-search', targetSelector: '#sas-search', placement: 'top', lot: 'Lot 9',
         title: 'Recherche rapide',
         content: 'Tape un client ou un projet pour filtrer le sas et ouvrir sa fiche d’un clic (Entrée ouvre le premier résultat). Le bouton Clients regroupe le sas par client.' },

@@ -113,6 +113,57 @@ describe('projectTime (temps passé)', () => {
   });
 });
 
+describe('temps effectif (Lot 22)', () => {
+  test('hoursSpent : temps passé saisi, sinon heures estimées', () => {
+    assert.equal(L.hoursSpent(task({ estimated_hours: 2, actual_hours: 3.5 })), 3.5);
+    assert.equal(L.hoursSpent(task({ estimated_hours: 2, actual_hours: null })), 2);
+    assert.equal(L.hoursSpent(task({ estimated_hours: 2 })), 2);
+    assert.equal(L.hoursSpent(task({ estimated_hours: 2, actual_hours: '1.25' })), 1.25);
+  });
+
+  test('hoursSpent : un temps passé de 0 est une vraie valeur, pas un oubli', () => {
+    assert.equal(L.hoursSpent(task({ estimated_hours: 2, actual_hours: 0 })), 0);
+  });
+
+  test('projectTime : le temps passé cumule le réel des tâches terminées (actives et archivées)', () => {
+    const tasks = [
+      task({ project_id: 'p1', estimated_hours: 2, actual_hours: 3, is_completed: true }),
+      task({ project_id: 'p1', estimated_hours: 5, actual_hours: 4 }), // pas terminée : ne compte pas
+    ];
+    const history = [
+      task({ project_id: 'p1', estimated_hours: 4, actual_hours: 1, is_completed: true, archived_at: 'x' }),
+      task({ project_id: 'p1', estimated_hours: 1, is_completed: true, archived_at: 'y' }), // sans réel : estimé
+    ];
+    const time = L.projectTime(tasks, history, 'p1');
+    assert.equal(time.spent, 5);
+    assert.equal(time.planned, 12);
+  });
+
+  test('parseOptionalHours : vide = non renseigné, virgule acceptée, négatif refusé', () => {
+    assert.equal(L.parseOptionalHours(''), null);
+    assert.equal(L.parseOptionalHours('   '), null);
+    assert.equal(L.parseOptionalHours(null), null);
+    assert.equal(L.parseOptionalHours('12'), 12);
+    assert.equal(L.parseOptionalHours('1,5'), 1.5);
+    assert.equal(L.parseOptionalHours('0'), 0);
+    assert.throws(() => L.parseOptionalHours('-2'), /invalide/);
+    assert.throws(() => L.parseOptionalHours('abc'), /invalide/);
+  });
+
+  test('budgetStatus : sans estimé, rien à comparer', () => {
+    assert.equal(L.budgetStatus(null, 5), null);
+    assert.equal(L.budgetStatus(undefined, 5), null);
+    assert.equal(L.budgetStatus(0, 5), null);
+  });
+
+  test('budgetStatus : avancement en %, plafonné à 100, et dépassement', () => {
+    assert.deepEqual(L.budgetStatus(40, 10), { estimated: 40, spent: 10, pct: 25, over: false });
+    assert.deepEqual(L.budgetStatus(40, 40), { estimated: 40, spent: 40, pct: 100, over: false });
+    assert.deepEqual(L.budgetStatus(40, 50), { estimated: 40, spent: 50, pct: 100, over: true });
+    assert.deepEqual(L.budgetStatus('8', 2), { estimated: 8, spent: 2, pct: 25, over: false });
+  });
+});
+
 describe('newWeek', () => {
   const at = '2026-10-12T08:00:00.000Z';
 

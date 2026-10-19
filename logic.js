@@ -202,15 +202,37 @@
       && (!planned.has(p.id) || parkedTasks(tasks, p.id).length > 0));
   }
 
-  // Temps d'un projet : tâches actives + historique. « Passé » = terminées (actives ou archivées).
+  // Temps effectif d'une tâche : le temps passé saisi (actual_hours), sinon ses heures estimées.
+  // Un temps passé de 0 est une vraie valeur ; seul « non renseigné » (null, vide) retombe sur l'estimé.
+  const hasValue = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(+v);
+  const hoursSpent = (t) => (hasValue(t.actual_hours) ? +t.actual_hours : hoursOf(t));
+  const sumSpent = (list) => list.reduce((s, t) => s + hoursSpent(t), 0);
+
+  // Temps d'un projet : tâches actives + historique. « Passé » = effectif des terminées (actives ou archivées).
   function projectTime(tasks, history, projectId) {
     const current = tasks.filter((t) => t.project_id === projectId);
     const past = history.filter((t) => t.project_id === projectId);
     return {
       count: current.length + past.length,
       planned: sumHours(current) + sumHours(past),
-      spent: sumHours(past) + sumHours(current.filter((t) => t.is_completed)),
+      spent: sumSpent(past) + sumSpent(current.filter((t) => t.is_completed)),
     };
+  }
+
+  // Heures saisies dans un champ facultatif : null si vide, nombre ≥ 0 sinon (virgule décimale acceptée).
+  function parseOptionalHours(raw) {
+    const text = String(raw ?? '').trim().replace(',', '.');
+    if (!text) return null;
+    const n = Number(text);
+    if (!Number.isFinite(n) || n < 0) throw new Error('Heures invalides.');
+    return n;
+  }
+
+  // Temps effectif face au temps estimé du projet ; null tant qu'aucun estimé n'est renseigné.
+  function budgetStatus(estimated, spent) {
+    const est = hasValue(estimated) ? +estimated : 0;
+    if (est <= 0) return null;
+    return { estimated: est, spent, pct: Math.min(100, Math.round((spent / est) * 100)), over: spent > est };
   }
 
   // « Nouvelle Semaine » : terminées -> historique ; les autres planifiées reviennent sur Lundi ;
@@ -514,7 +536,7 @@
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
     comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
-    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };
