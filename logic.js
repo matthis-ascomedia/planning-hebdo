@@ -383,6 +383,50 @@
   const canUnconsign = (t) => !!t.consigned_at && !t.week_id;
   const unconsignPatch = () => ({ archived_at: null, consigned_at: null });
 
+  // ---- Suppression définitive des archives (Lot 24) ----
+  // Seul un projet archivé (terminé) peut être supprimé ; avec lui partent ses tâches (actives et archivées),
+  // leurs commentaires, ses liens et ses séries récurrentes. Les semaines closes gardent leurs chiffres.
+  const canDeleteProject = (p) => p.status === 'termine';
+
+  const projectTaskIds = ({ tasks, history }, projectId) => new Set(tasks.concat(history).filter((t) => t.project_id === projectId).map((t) => t.id));
+
+  function projectDeletion(state, projectId) {
+    const ids = projectTaskIds(state, projectId);
+    return {
+      tasks: ids.size,
+      comments: state.comments.filter((c) => ids.has(c.task_id)).length,
+      links: state.links.filter((l) => l.project_id === projectId).length,
+      series: state.recurrences.filter((r) => r.project_id === projectId).length,
+    };
+  }
+
+  // Phrases du récapitulatif de suppression (les éléments absents sont omis).
+  function deletionParts({ tasks, comments, links, series }) {
+    const n = (count, word) => (count ? `${count} ${word}${count > 1 ? 's' : ''}` : '');
+    return [n(tasks, 'tâche'), n(comments, 'commentaire'), n(links, 'lien'), n(series, 'récurrence')].filter(Boolean);
+  }
+
+  // État sans le projet et tout ce qui lui est rattaché ; ne modifie pas l'état reçu.
+  function withoutProject(state, projectId) {
+    const ids = projectTaskIds(state, projectId);
+    return {
+      projects: state.projects.filter((p) => p.id !== projectId),
+      tasks: state.tasks.filter((t) => t.project_id !== projectId),
+      history: state.history.filter((t) => t.project_id !== projectId),
+      comments: state.comments.filter((c) => !ids.has(c.task_id)),
+      links: state.links.filter((l) => l.project_id !== projectId),
+      recurrences: state.recurrences.filter((r) => r.project_id !== projectId),
+    };
+  }
+
+  // État sans une tâche (active ou archivée) et ses commentaires.
+  const withoutTask = (state, taskId) => ({
+    ...state,
+    tasks: state.tasks.filter((t) => t.id !== taskId),
+    history: state.history.filter((t) => t.id !== taskId),
+    comments: state.comments.filter((c) => c.task_id !== taskId),
+  });
+
   // Tâches archivées d'une semaine : rattachées par week_id, ou (reprise) par date d'archivage identique.
   function weekTasks(history, week) {
     const at = new Date(week.closed_at).getTime();
@@ -548,7 +592,7 @@
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
     comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
-    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
     weekSnapshot, weekPeriods, weekTasks };

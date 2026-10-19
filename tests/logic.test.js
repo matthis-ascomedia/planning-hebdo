@@ -164,6 +164,68 @@ describe('temps effectif (Lot 22)', () => {
   });
 });
 
+describe('suppression définitive des archives (Lot 24)', () => {
+  const state = () => ({
+    projects: [project('p1', 'Site', 'Acme', 'termine'), project('p2', 'App', 'Acme')],
+    tasks: [task({ id: 'a', project_id: 'p1' }), task({ id: 'b', project_id: 'p2' })],
+    history: [task({ id: 'h1', project_id: 'p1', archived_at: 'x' }), task({ id: 'h2', project_id: 'p2', archived_at: 'x' }), task({ id: 'h3', project_id: 'p1', archived_at: 'y' })],
+    comments: [
+      { id: 'c1', task_id: 'a', body: 'x' }, { id: 'c2', task_id: 'h1', body: 'y' },
+      { id: 'c3', task_id: 'b', body: 'z' }, { id: 'c4', task_id: 'h2', body: 'w' },
+    ],
+    links: [{ id: 'l1', project_id: 'p1' }, { id: 'l2', project_id: 'p2' }],
+    recurrences: [{ id: 'r1', project_id: 'p1' }, { id: 'r2', project_id: 'p2' }],
+  });
+
+  test('canDeleteProject : seul un projet archivé (terminé) peut être supprimé', () => {
+    assert.equal(L.canDeleteProject(project('p', 'X', 'A', 'termine')), true);
+    assert.equal(L.canDeleteProject(project('p', 'X', 'A', 'en_cours')), false);
+  });
+
+  test('projectDeletion : tout ce qui part avec le projet', () => {
+    const s = state();
+    assert.deepEqual(L.projectDeletion(s, 'p1'), { tasks: 3, comments: 2, links: 1, series: 1 });
+    assert.deepEqual(L.projectDeletion(s, 'p2'), { tasks: 2, comments: 2, links: 1, series: 1 });
+    assert.deepEqual(L.projectDeletion(s, 'zz'), { tasks: 0, comments: 0, links: 0, series: 0 });
+  });
+
+  test('projectDeletion : le devis (champ du projet) ne compte pas comme lien', () => {
+    const s = state();
+    s.projects[0].quote_url = 'https://d.fr';
+    assert.equal(L.projectDeletion(s, 'p1').links, 1);
+  });
+
+  test('deletionParts : phrases au singulier ou au pluriel, sans les zéros', () => {
+    assert.deepEqual(L.deletionParts({ tasks: 3, comments: 1, links: 0, series: 2 }), ['3 tâches', '1 commentaire', '2 récurrences']);
+    assert.deepEqual(L.deletionParts({ tasks: 1, comments: 0, links: 1, series: 0 }), ['1 tâche', '1 lien']);
+    assert.deepEqual(L.deletionParts({ tasks: 0, comments: 0, links: 0, series: 0 }), []);
+  });
+
+  test('withoutProject : le projet, ses tâches (actives et archivées), commentaires, liens et séries disparaissent', () => {
+    const next = L.withoutProject(state(), 'p1');
+    assert.deepEqual(next.projects.map((p) => p.id), ['p2']);
+    assert.deepEqual(next.tasks.map((t) => t.id), ['b']);
+    assert.deepEqual(next.history.map((t) => t.id), ['h2']);
+    assert.deepEqual(next.comments.map((c) => c.id), ['c3', 'c4']);
+    assert.deepEqual(next.links.map((l) => l.id), ['l2']);
+    assert.deepEqual(next.recurrences.map((r) => r.id), ['r2']);
+  });
+
+  test('withoutProject : ne modifie pas l’état reçu', () => {
+    const s = state();
+    L.withoutProject(s, 'p1');
+    assert.equal(s.projects.length, 2);
+    assert.equal(s.history.length, 3);
+  });
+
+  test('withoutTask : la tâche et ses commentaires seulement', () => {
+    const next = L.withoutTask(state(), 'h1');
+    assert.deepEqual(next.history.map((t) => t.id), ['h2', 'h3']);
+    assert.deepEqual(next.comments.map((c) => c.id), ['c1', 'c3', 'c4']);
+    assert.equal(next.tasks.length, 2);
+  });
+});
+
 describe('consigner une tâche (Lot 23)', () => {
   const NOW = '2026-10-19T09:30:00.000Z';
 

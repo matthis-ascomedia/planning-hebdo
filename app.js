@@ -9,7 +9,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
   comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel,
-  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
@@ -27,6 +27,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.24.0', type: 'mineure', lot: 'Lot 24', date: '2026-10-19',
+    items: [
+      'Archives : un bouton « Supprimer » sur chaque projet archivé et chaque tâche consignée, avec une confirmation qui détaille ce qui part.',
+      'Supprimer un projet supprime aussi ses tâches (actives et archivées), leurs commentaires, ses liens et ses récurrences. Irréversible.',
+      'Les semaines closes gardent leurs chiffres ; les tâches supprimées disparaissent seulement de leur détail.',
+    ],
+  },
   {
     version: '1.23.0', type: 'mineure', lot: 'Lot 23', date: '2026-10-19',
     items: [
@@ -860,6 +868,8 @@ function renderArchives() {
                 <span class="text-xs text-slate-500">${n} tâche${n > 1 ? 's' : ''}</span>
                 <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
                         data-reopen="${p.id}">Rouvrir</button>
+                <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
+                        data-delete-project="${p.id}" title="Supprimer définitivement le projet et ses tâches" aria-label="Supprimer définitivement le projet ${esc(p.name)}">Supprimer</button>
               </li>`;
             }).join('')}
           </ul>
@@ -879,6 +889,8 @@ function renderArchives() {
             <span class="text-xs text-slate-500">${esc(fmtDate(t.consigned_at, SHORT_DATE))} · ${week ? `semaine close le ${esc(fmtDate(week.closed_at, SHORT_DATE))}` : 'prochaine semaine'}</span>
             ${canUnconsign(t) ? `<button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
                     data-unconsign="${t.id}" title="Remettre la tâche dans le planning">Rétablir</button>` : ''}
+            <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
+                    data-delete-consigned="${t.id}" title="Supprimer définitivement la tâche" aria-label="Supprimer définitivement la tâche ${esc(t.task_name)}">Supprimer</button>
           </li>`;
       }).join('')}</ul>`
     : '<p class="text-sm text-slate-400">Aucune tâche consignée : « Consigner » apparaît sur une tâche terminée du planning.</p>';
@@ -1912,6 +1924,49 @@ projectEditForm.addEventListener('submit', async (e) => {
   }
 });
 
+// Suppression définitive depuis les Archives (Lot 24), toujours confirmée.
+const archiveState = () => ({ projects, tasks, history, comments, links, recurrences });
+const applyArchiveState = (st) => ({ projects, tasks, history, comments, links, recurrences } = st);
+
+async function deleteArchivedProject(id) {
+  const p = projects.find((x) => x.id === id);
+  if (!p || !canDeleteProject(p)) return;
+  const parts = deletionParts(projectDeletion(archiveState(), id));
+  const ok = await askConfirm({
+    title: `Supprimer définitivement « ${p.name} » ?`,
+    message: `Le projet de ${p.clients.name}${parts.length ? ` sera supprimé avec ${parts.join(', ')}` : ' sera supprimé'}. Cette action est irréversible.`
+      + (parts.length ? '\nLes semaines déjà closes gardent leurs chiffres ; seul le détail de leurs tâches supprimées disparaît.' : ''),
+    confirmLabel: 'Supprimer définitivement',
+    danger: true,
+  });
+  if (!ok) return;
+  const snapshot = archiveState();
+  applyArchiveState(withoutProject(snapshot, id));
+  render();
+  run(
+    async () => { await api('projects', `?id=eq.${id}`, { method: 'DELETE' }); toast(`Projet « ${p.name} » supprimé`); },
+    () => applyArchiveState(snapshot)
+  );
+}
+
+async function deleteConsignedTask(id) {
+  const t = history.find((x) => x.id === id);
+  if (!t) return;
+  const n = taskComments(id).length;
+  const ok = await askConfirm({
+    title: 'Supprimer définitivement la tâche ?',
+    message: `« ${t.task_name} » sera supprimée${n > 1 ? ` avec ses ${n} commentaires` : n ? ' avec son commentaire' : ''}. Cette action est irréversible.`
+      + (t.week_id ? '\nLa semaine close qui la compte garde ses chiffres, mais la tâche disparaîtra de son détail.' : ''),
+    confirmLabel: 'Supprimer définitivement',
+    danger: true,
+  });
+  if (!ok) return;
+  const snapshot = archiveState();
+  applyArchiveState(withoutTask(snapshot, id));
+  render();
+  run(async () => { await db.remove(id); toast('Tâche supprimée'); }, () => applyArchiveState(snapshot));
+}
+
 // Archives : rouvrir un projet terminé (il retourne dans le sas s'il n'a pas de tâche planifiée)
 function reopenProject(id) {
   const p = projects.find((x) => x.id === id);
@@ -1926,6 +1981,10 @@ function reopenProject(id) {
   if (reopen) return reopenProject(reopen);
   const unconsign = e.target.dataset.unconsign;
   if (unconsign) return unconsignTask(unconsign);
+  const delProject = e.target.dataset.deleteProject;
+  if (delProject) return deleteArchivedProject(delProject);
+  const delConsigned = e.target.dataset.deleteConsigned;
+  if (delConsigned) return deleteConsignedTask(delConsigned);
   const open = e.target.closest('[data-open-project]')?.dataset.openProject;
   if (open) openProject(open);
 }));
@@ -2827,9 +2886,9 @@ const TOURS = {
       { id: 'clients', targetSelector: '#tab-clients', placement: 'bottom', lot: 'Lot 8',
         title: 'Les clients',
         content: 'Chaque client a sa fiche : logo, site web et projets rattachés. Dans le détail d’un projet, ajoute l’année, le devis et des liens d’accès rapide.' },
-      { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 23',
+      { id: 'archives', targetSelector: '#tab-archives', placement: 'bottom', lot: 'Lot 24',
         title: 'Les archives',
-        content: 'Les projets archivés depuis le sas sont rangés dans cet onglet ; tu peux les rouvrir à tout moment. Une tâche terminée peut aussi être « consignée » avec son temps passé : elle apparaît ici tout de suite.' },
+        content: 'Les projets archivés depuis le sas sont rangés dans cet onglet ; tu peux les rouvrir à tout moment. Une tâche terminée peut aussi être « consignée » avec son temps passé : elle apparaît ici tout de suite. Chaque élément des archives peut être supprimé définitivement.' },
       { id: 'settings', targetSelector: '#tab-settings', placement: 'bottom', lot: 'Lot 13',
         title: 'Les réglages',
         content: 'Définis ici les types de projet par défaut et leur ordre. Ils sont proposés en premier dans le détail d’un projet, avant les types saisis librement.' },
