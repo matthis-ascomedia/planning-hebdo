@@ -28,6 +28,13 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.21.0', type: 'mineure', lot: 'Lot 21', date: '2026-10-19',
+    items: [
+      'Historique : un bouton en face de chaque tâche d’une semaine close la duplique dans le sas d’attente de la semaine active.',
+      'La copie reprend le projet, le nom, les heures, les étiquettes et la réunion ; ni commentaires, ni récurrence. Un projet archivé est rouvert.',
+    ],
+  },
+  {
     version: '1.20.0', type: 'mineure', lot: 'Lot 20', date: '2026-10-19',
     items: [
       'Commentaires : par défaut, ce qu’on écrit sur une carte est une simple note (sans case à cocher, jamais comptée comme non traitée).',
@@ -1101,8 +1108,10 @@ function openDuplicate(id) {
   ($('#duplicate-targets [aria-current]') || $('#duplicate-targets button')).focus();
 }
 
+// Le modèle peut être une tâche du planning ou une tâche archivée (bouton de l'Historique, Lot 21).
 async function duplicateTask(id, day) {
-  const t = tasks.find((x) => x.id === id);
+  const t = tasks.find((x) => x.id === id) ?? history.find((x) => x.id === id);
+  if (!t) return;
   const p = projects.find((x) => x.id === t.project_id);
   await run(async () => {
     const [created] = await db.insert(duplicateRow(t, day || null));
@@ -1850,6 +1859,9 @@ function weekHTML(w) {
                   <span class="min-w-0 flex-1 truncate">${esc(t.task_name)}</span>
                   ${labelChipsHTML(t)}
                   <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+                  <button type="button" data-lot="Lot 21" data-duplicate-history="${t.id}"
+                    class="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-900 focus-visible:text-slate-900 transition"
+                    title="Dupliquer dans le sas d’attente (semaine active)" aria-label="Dupliquer « ${esc(t.task_name)} » dans le sas d’attente">${COPY_ICON}</button>
                 </div>
                 ${cs.length ? `<ul class="mt-1 pl-3 space-y-1">${cs.map(commentHTML).join('')}</ul>` : ''}
               </li>`;
@@ -1870,7 +1882,11 @@ $('#history-view').addEventListener('change', (e) => {
   const id = e.target.dataset.commentToggle;
   if (id) toggleComment(id, e.target.checked);
 });
-$('#history-view').addEventListener('click', onCommentEdit);
+$('#history-view').addEventListener('click', (e) => {
+  const dup = e.target.closest('[data-duplicate-history]')?.dataset.duplicateHistory;
+  if (dup) return duplicateTask(dup, null);
+  onCommentEdit(e);
+});
 
 // ---------- Clients : liste et fiche (#clients/<id>) ----------
 const initials = (name) => esc(name.trim().slice(0, 2).toUpperCase());
@@ -2648,9 +2664,9 @@ const TOURS = {
       { id: 'sas-search', targetSelector: '#sas-search', placement: 'top', lot: 'Lot 9',
         title: 'Recherche rapide',
         content: 'Tape un client ou un projet pour filtrer le sas et ouvrir sa fiche d’un clic (Entrée ouvre le premier résultat). Le bouton Clients regroupe le sas par client.' },
-      { id: 'history', targetSelector: '#tab-history', placement: 'bottom', lot: 'Lot 11',
+      { id: 'history', targetSelector: '#tab-history', placement: 'bottom', lot: 'Lot 21',
         title: 'L’historique des semaines',
-        content: 'Chaque « Nouvelle Semaine » enregistre ici la semaine close : tâches terminées et reportées, temps par client, et commentaires restés non traités.' },
+        content: 'Chaque « Nouvelle Semaine » enregistre ici la semaine close : tâches terminées et reportées, temps par client, et commentaires restés non traités. Le bouton ⧉ d’une tâche la duplique dans le sas d’attente de la semaine active.' },
       { id: 'clients', targetSelector: '#tab-clients', placement: 'bottom', lot: 'Lot 8',
         title: 'Les clients',
         content: 'Chaque client a sa fiche : logo, site web et projets rattachés. Dans le détail d’un projet, ajoute l’année, le devis et des liens d’accès rapide.' },

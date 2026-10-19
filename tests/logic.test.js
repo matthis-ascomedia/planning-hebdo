@@ -399,6 +399,33 @@ describe('newWeek (tâches gardées)', () => {
   });
 });
 
+describe('duplicateRow depuis l’historique (Lot 21)', () => {
+  const archived = task({
+    id: 'h1', project_id: 'p1', client_name: 'Acme', project_name: 'Site', task_name: 'Maquette', estimated_hours: 3,
+    day_of_week: 'Mardi', is_completed: true, label_ids: ['l1'], start_time: '10:00', meeting_url: 'https://meet.x/abc',
+    archived_at: '2026-10-09T10:00:00Z', week_id: 'w1', google_event_id: 'ev1', recurrence_id: 'r1',
+  });
+
+  test('la copie arrive dans le sas, non terminée, avec projet, nom, heures, étiquettes et réunion', () => {
+    const row = L.duplicateRow(archived, null);
+    assert.deepEqual(row, {
+      project_id: 'p1', client_name: 'Acme', project_name: 'Site', task_name: 'Maquette', estimated_hours: 3,
+      day_of_week: null, is_completed: false, label_ids: ['l1'], start_time: '10:00', meeting_url: 'https://meet.x/abc',
+    });
+  });
+
+  test('rien de l’archivage ne suit : ni semaine, ni date, ni événement Google, ni série', () => {
+    const row = L.duplicateRow(archived, null);
+    ['archived_at', 'week_id', 'google_event_id', 'recurrence_id', 'id'].forEach((k) => assert.equal(k in row, false, k));
+  });
+
+  test('les étiquettes sont copiées, pas partagées', () => {
+    const row = L.duplicateRow(archived, null);
+    row.label_ids.push('l2');
+    assert.deepEqual(archived.label_ids, ['l1']);
+  });
+});
+
 describe('commentaires', () => {
   const comments = [
     { id: 'm1', task_id: 'a', body: 'x', is_done: false },
