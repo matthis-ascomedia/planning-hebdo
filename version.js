@@ -1,2 +1,2 @@
 // Généré par scripts/stamp.js : ne pas éditer à la main.
-window.BUILD = { commit: "43e1857" };
+window.BUILD = { commit: "e73f816" };

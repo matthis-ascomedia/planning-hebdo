@@ -8,7 +8,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, monthlyRank, dueOccurrences, recurrenceLabel,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, suggestionContext, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -27,6 +27,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.26.0', type: 'mineure', lot: 'Lot 26', date: '2026-10-20',
+    items: [
+      'Bloc-notes : bouton « Suggérer des tâches ». L’IA lit la note et propose, projet par projet, les tâches à créer dans le sas et celles du sas à planifier.',
+      'Chaque suggestion se valide : case à cocher, nom, projet (ou nouveau projet), heures et destination (sas ou jour) modifiables. Rien n’est créé sans « Appliquer ».',
+      'Fonctionne une fois la fonction Supabase suggest-tasks déployée avec une clé Anthropic (voir supabase/functions/suggest-tasks/README.md).',
+    ],
+  },
   {
     version: '1.25.0', type: 'mineure', lot: 'Lot 25', date: '2026-10-20',
     items: [
@@ -2889,19 +2897,23 @@ function setNotesOpen(open) {
 }
 
 // « Reprendre la semaine précédente » : seulement sur une note vide, si la précédente a du contenu.
-function syncNoteReuse() {
+// « Suggérer des tâches » : dès que la note a du contenu.
+function syncNoteActions() {
+  const empty = !notesText.value.trim();
   const previous = noteOf(shiftWeek(noteWeek, -1))?.body ?? '';
-  $('#notes-reuse').classList.toggle('hidden', !!notesText.value.trim() || !previous.trim());
+  $('#notes-reuse').classList.toggle('hidden', !empty || !previous.trim());
+  $('#notes-suggest').disabled = empty;
 }
+
+const weekTitle = (week) => `Semaine du ${new Date(`${week}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}`;
 
 // En-tête de la semaine affichée ; le texte n'est remplacé que s'il n'y a pas de saisie en attente.
 function renderNotes() {
   const offset = weekOffset(noteWeek, weekKey(new Date()));
-  const monday = new Date(`${noteWeek}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
-  $('#notes-week').textContent = `Semaine du ${monday}${RELATIVE_WEEK[offset] ? ` · ${RELATIVE_WEEK[offset]}` : ''}`;
+  $('#notes-week').textContent = `${weekTitle(noteWeek)}${RELATIVE_WEEK[offset] ? ` · ${RELATIVE_WEEK[offset]}` : ''}`;
   $('#notes-today').classList.toggle('hidden', offset === 0);
   if (!noteDirty) notesText.value = noteOf(noteWeek)?.body ?? '';
-  syncNoteReuse();
+  syncNoteActions();
 }
 
 function readDraft() {
@@ -2984,7 +2996,7 @@ function editNote(from, to, insert) {
 notesText.addEventListener('input', () => {
   noteDirty = true;
   keepDraft();
-  syncNoteReuse();
+  syncNoteActions();
   noteStatus('Modifications en cours…');
   clearTimeout(noteTimer);
   noteTimer = setTimeout(saveNote, 800);
@@ -3018,6 +3030,192 @@ $('#notes-reuse').addEventListener('click', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') saveNote({ keepalive: true });
 });
+
+// ---------- Suggestions de tâches par l'IA (Lot 26) ----------
+// La fonction Supabase suggest-tasks lit la note avec Claude. Ses propositions sont vérifiées (reviewSuggestions)
+// puis validées une par une : nouvelles tâches (sas, ou jour choisi) et tâches du sas à planifier.
+const suggestDialog = $('#suggest-dialog');
+let suggItems = []; // propositions vérifiées + choix en cours (retenue, nom, projet, heures, jour)
+let suggRun = 0; // numéro de l'analyse : la réponse d'une analyse abandonnée est ignorée
+
+const SPINNER = '<span class="w-4 h-4 shrink-0 rounded-full border-2 border-slate-300 border-t-slate-900 animate-spin" aria-hidden="true"></span>';
+const SUGG_BADGE = {
+  new: ['Nouvelle tâche', 'bg-emerald-50 text-emerald-700'],
+  plan: ['Dans le sas', 'bg-blue-50 text-blue-700'],
+  planned: ['Déjà planifiée', 'bg-slate-100 text-slate-500'],
+};
+const SUGG_FIELD = 'px-2 py-1 text-sm rounded-md bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none';
+
+// Appel d'une fonction Supabase (Edge Function) au nom de l'utilisateur connecté.
+async function callFunction(name, body, retried = false) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+  if (res.status === 401 && session && !retried) {
+    try { await refreshSession(); } catch { setAuthed(false); throw new Error('Session expirée, reconnecte-toi.'); }
+    return callFunction(name, body, true);
+  }
+  const data = await res.json().catch(() => null);
+  if (res.status === 404 && !data?.error) throw new Error(`La fonction « ${name} » n’est pas encore déployée sur Supabase : voir supabase/functions/${name}/README.md.`);
+  if (!res.ok) throw new Error(data?.error || data?.message || data?.msg || `Erreur ${res.status}`);
+  return data;
+}
+
+function suggestStatus(msg, { error = false, busy = false } = {}) {
+  const el = $('#suggest-status');
+  el.innerHTML = `${busy ? SPINNER : ''}<span>${esc(msg)}</span>`;
+  el.classList.toggle('text-red-700', error);
+  el.classList.toggle('text-slate-600', !error);
+}
+
+async function openSuggestions() {
+  const note = notesText.value.trim();
+  if (!note) return;
+  saveNote();
+  const runId = ++suggRun;
+  suggItems = [];
+  $('#suggest-week').textContent = `D’après le bloc-notes de la ${weekTitle(noteWeek).toLowerCase()}`;
+  $('#suggest-list').classList.add('hidden');
+  $('#suggest-apply').disabled = true;
+  $('#suggest-apply').textContent = 'Appliquer';
+  suggestStatus('L’IA lit la note… (une demi-minute environ)', { busy: true });
+  suggestDialog.showModal();
+  try {
+    const data = await callFunction('suggest-tasks', suggestionContext(note, noteWeek, projects, tasks));
+    if (runId !== suggRun) return;
+    suggItems = reviewSuggestions(data?.suggestions, projects, tasks).map((it) => ({ ...it, picked: it.kind !== 'planned' }));
+    renderSuggestions();
+  } catch (ex) {
+    if (runId !== suggRun) return;
+    console.error(ex);
+    suggestStatus(ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message, { error: true });
+  }
+}
+
+function renderSuggestions() {
+  const byName = (a, b) => a.clients.name.localeCompare(b.clients.name) || a.name.localeCompare(b.name);
+  const open = projects.filter((p) => p.status === 'en_cours').sort(byName);
+  const projectOptions = (it) => {
+    const current = projects.find((p) => p.id === it.projectId);
+    const choices = current && current.status !== 'en_cours' ? [current, ...open] : open;
+    const first = it.newProject
+      ? `<option value="" ${it.projectId ? '' : 'selected'}>+ Nouveau projet : ${esc(it.newClient || DEFAULT_CLIENT)} · ${esc(it.newProject)}</option>`
+      : it.projectId ? '' : '<option value="">Choisir un projet…</option>';
+    return first + choices.map((p) => `<option value="${p.id}" ${p.id === it.projectId ? 'selected' : ''}>${esc(p.clients.name)} · ${esc(p.name)}${p.status !== 'en_cours' ? ' (archivé : sera rouvert)' : ''}</option>`).join('');
+  };
+  const dayOptions = (it) => (it.kind === 'new' ? `<option value="" ${it.day ? '' : 'selected'}>Sas d’attente</option>` : '')
+    + DAYS.map((d) => `<option ${d === it.day ? 'selected' : ''}>${d}</option>`).join('');
+  $('#suggest-list').innerHTML = suggItems.map((it, i) => {
+    const [label, cls] = SUGG_BADGE[it.kind];
+    const p = projects.find((x) => x.id === it.projectId);
+    const active = it.kind !== 'planned';
+    const origin = [it.excerpt && `« ${esc(it.excerpt)} »`, it.reason && `<span class="text-slate-400">${esc(it.reason)}</span>`].filter(Boolean).join(' ');
+    return `
+      <li class="flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-2.5 ${active ? '' : 'opacity-60'}">
+        <input type="checkbox" class="chk mt-2" data-sugg-pick="${i}" ${it.picked ? 'checked' : ''} ${active ? '' : 'disabled'} aria-label="Retenir « ${esc(it.task_name)} »" />
+        <div class="min-w-0 flex-1 basis-56">
+          ${it.kind === 'new'
+            ? `<input data-sugg-name="${i}" value="${esc(it.task_name)}" maxlength="200" autocomplete="off" aria-label="Nom de la tâche" class="w-full ${SUGG_FIELD} font-medium" />`
+            : `<p class="px-2 py-1 text-sm font-medium break-words">${esc(it.task_name)}</p>`}
+          ${origin ? `<p class="mt-0.5 px-2 text-xs text-slate-500 break-words">${origin}</p>` : ''}
+        </div>
+        <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
+          ${it.kind === 'new'
+            ? `<select data-sugg-project="${i}" aria-label="Projet" class="min-w-0 max-w-[16rem] ${SUGG_FIELD}">${projectOptions(it)}</select>
+               <input data-sugg-hours="${i}" type="number" min="0" step="0.25" value="${it.hours}" aria-label="Heures" title="Heures" class="w-20 ${SUGG_FIELD}" />`
+            : `<span class="min-w-0 max-w-[16rem] truncate text-xs text-slate-500">${p ? `${esc(p.clients.name)} · ${esc(p.name)} · ` : ''}${fmtH(it.hours)}</span>`}
+          ${active ? `<select data-sugg-day="${i}" aria-label="Destination" class="${SUGG_FIELD}">${dayOptions(it)}</select>` : `<span class="text-xs text-slate-500">${esc(it.day)}</span>`}
+          <span class="shrink-0 whitespace-nowrap text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
+        </div>
+      </li>`;
+  }).join('') || '<li class="px-3 py-3 text-sm text-slate-400">Aucune tâche à proposer : la note ne cite pas d’action reconnue.</li>';
+  $('#suggest-list').classList.remove('hidden');
+  const count = (kind) => suggItems.filter((it) => it.kind === kind).length;
+  const s = (n) => (n > 1 ? 's' : '');
+  const parts = [
+    count('new') && `${count('new')} nouvelle${s(count('new'))} tâche${s(count('new'))}`,
+    count('plan') && `${count('plan')} à planifier`,
+    count('planned') && `${count('planned')} déjà planifiée${s(count('planned'))}`,
+  ].filter(Boolean);
+  suggestStatus(parts.length ? `${parts.join(' · ')}. Coche ce que tu retiens, ajuste si besoin, puis applique.` : '');
+  syncSuggestApply();
+}
+
+function syncSuggestApply() {
+  const n = suggItems.filter((it) => it.picked && it.kind !== 'planned').length;
+  $('#suggest-apply').disabled = !n;
+  $('#suggest-apply').textContent = n ? `Appliquer (${n})` : 'Appliquer';
+}
+
+// Saisies dans la liste : mises à jour sur place (pas de nouveau rendu, le focus reste dans le champ).
+function onSuggestEdit(e) {
+  const { suggPick, suggName, suggProject, suggHours, suggDay } = e.target.dataset;
+  const it = suggItems[suggPick ?? suggName ?? suggProject ?? suggHours ?? suggDay];
+  if (!it) return;
+  if (suggPick != null) it.picked = e.target.checked;
+  if (suggName != null) it.task_name = e.target.value;
+  if (suggProject != null) it.projectId = e.target.value;
+  if (suggHours != null) it.hours = e.target.value;
+  if (suggDay != null) it.day = e.target.value;
+  syncSuggestApply();
+}
+$('#suggest-list').addEventListener('input', onSuggestEdit);
+$('#suggest-list').addEventListener('change', onSuggestEdit);
+
+$('#suggest-apply').addEventListener('click', async () => {
+  const picked = suggItems.filter((it) => it.picked && it.kind !== 'planned');
+  const creations = picked.filter((it) => it.kind === 'new');
+  const plans = picked.filter((it) => it.kind === 'plan');
+  try {
+    creations.forEach((it) => {
+      if (!it.task_name.trim()) throw new Error('Une tâche retenue n’a pas de nom.');
+      if (!it.projectId && !it.newProject) throw new Error(`Choisis le projet de « ${it.task_name.trim()} ».`);
+      it.estimated_hours = parseOptionalHours(it.hours) ?? 0;
+    });
+  } catch (ex) { suggestStatus(ex.message, { error: true }); return; }
+  $('#suggest-apply').disabled = true;
+  suggestStatus('Enregistrement…', { busy: true });
+  try {
+    if (creations.length) {
+      const rows = [];
+      for (const it of creations) {
+        const project = it.projectId ? projects.find((p) => p.id === it.projectId) : await ensureProject(it.newClient, it.newProject);
+        await reopenIfArchived(project);
+        rows.push({
+          project_id: project.id, client_name: project.clients.name, project_name: project.name, task_name: it.task_name.trim(),
+          estimated_hours: it.estimated_hours, day_of_week: it.day || null, is_completed: false, label_ids: [],
+        });
+      }
+      tasks = tasks.concat(await db.insert(rows));
+      suggItems = suggItems.filter((it) => !creations.includes(it)); // déjà créées : pas de doublon si la suite échoue
+    }
+    for (const day of DAYS) {
+      const batch = plans.filter((it) => it.day === day);
+      if (!batch.length) continue;
+      const ids = batch.map((it) => it.taskId);
+      await api('tasks', `?id=in.(${ids.join(',')})`, { method: 'PATCH', body: { day_of_week: day, group_rank: null } });
+      tasks.forEach((t) => { if (ids.includes(t.id)) Object.assign(t, { day_of_week: day, group_rank: null }); });
+      suggItems = suggItems.filter((it) => !batch.includes(it));
+    }
+    suggestDialog.close();
+    render();
+    const toSas = creations.filter((it) => !it.day).length;
+    toast([
+      creations.length && `${plural(creations.length, 'tâche')} créée${creations.length > 1 ? 's' : ''}${toSas ? ` (${toSas} dans le sas)` : ''}`,
+      plans.length && `${plural(plans.length, 'tâche')} planifiée${plans.length > 1 ? 's' : ''}`,
+    ].filter(Boolean).join(' · '));
+  } catch (ex) {
+    console.error(ex);
+    render();
+    renderSuggestions();
+    suggestStatus(ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message, { error: true });
+  }
+});
+
+$('#notes-suggest').addEventListener('click', openSuggestions);
+const closeSuggest = () => suggestDialog.close();
+$('#suggest-close').addEventListener('click', closeSuggest);
+$('#suggest-cancel').addEventListener('click', closeSuggest);
+suggestDialog.addEventListener('click', (e) => { if (e.target === suggestDialog) closeSuggest(); });
+suggestDialog.addEventListener('close', () => { suggRun += 1; });
 
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
@@ -3069,7 +3267,7 @@ const TOURS = {
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
       { id: 'notes', targetSelector: '#notes-tab', placement: 'bottom', lot: 'Lot 25',
         title: 'Bloc-notes de la semaine',
-        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine (‹ › pour revoir les précédentes).' },
+        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une.' },
       { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
         title: 'Étiquettes et réunions',
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },

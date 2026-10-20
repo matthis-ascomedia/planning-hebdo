@@ -289,6 +289,51 @@
     return { from: caret, to: caret, insert: `\n${indent}${bullet || `${Number(num) + 1}${sep}`} ` };
   }
 
+  // ---- Suggestions de tâches par l'IA (Lot 26) ----
+  // Données envoyées à la fonction suggest-tasks : la note, les projets (en cours puis archivés) et les tâches actives.
+  function suggestionContext(note, weekStart, projects, tasks) {
+    const status = (p) => (p.status === 'en_cours' ? 'en cours' : 'archivé');
+    return {
+      week_start: weekStart,
+      note: String(note ?? '').trim(),
+      projects: [...projects].sort((a, b) => (a.status === 'en_cours' ? 0 : 1) - (b.status === 'en_cours' ? 0 : 1))
+        .map((p) => ({ id: p.id, client: p.clients?.name ?? '', name: p.name, type: p.type ?? '', status: status(p) })),
+      tasks: tasks.map((t) => ({ id: t.id, project_id: t.project_id, name: t.task_name, day: t.day_of_week || 'sas', hours: hoursOf(t), done: !!t.is_completed })),
+    };
+  }
+
+  // Propositions de l'IA vérifiées contre l'état réel (projets, tâches actives) :
+  //  - « new » : tâche à créer (sas par défaut, ou le jour cité) dans un projet connu ou un nouveau projet ;
+  //  - « plan » : tâche existante encore dans le sas, à planifier (jour cité, sinon Lundi) ;
+  //  - « planned » : tâche déjà dans le planning (affichée pour information).
+  // Une tâche à créer qui porte le nom d'une tâche active du même projet est traitée comme cette tâche.
+  // Les propositions inexploitables (sans nom, projet inconnu sans nouveau projet) et les doublons sont écartés.
+  function reviewSuggestions(raw, projects, tasks) {
+    const seen = new Set();
+    const text = (v) => String(v ?? '').trim();
+    const once = (key) => !seen.has(key) && seen.add(key);
+    return (Array.isArray(raw) ? raw : []).map((s) => {
+      const day = DAYS.includes(s?.day) ? s.day : '';
+      const common = { excerpt: text(s?.note_excerpt), reason: text(s?.reason) };
+      const name = text(s?.task_name);
+      const project = projects.find((p) => p.id === s?.project_id) ?? null;
+      const existing = tasks.find((t) => t.id === s?.task_id)
+        ?? (project && name ? tasks.find((t) => t.project_id === project.id && same(t.task_name, name)) : null);
+      if (existing) {
+        if (!once(`t:${existing.id}`)) return null;
+        return { ...common, kind: existing.day_of_week ? 'planned' : 'plan', taskId: existing.id, projectId: existing.project_id,
+          task_name: existing.task_name, hours: hoursOf(existing), day: existing.day_of_week || day || DAYS[0] };
+      }
+      const newClient = text(s?.new_client);
+      const newProject = text(s?.new_project);
+      if (!name || (!project && !newProject)) return null;
+      if (!once(`n:${project?.id ?? normalizeText(`${newClient}·${newProject}`)}:${normalizeText(name)}`)) return null;
+      const hours = Number.isFinite(+s?.estimated_hours) && +s.estimated_hours > 0 ? Math.round(+s.estimated_hours * 4) / 4 : 1;
+      return { ...common, kind: 'new', taskId: '', projectId: project?.id ?? '', newClient: project ? '' : newClient, newProject: project ? '' : newProject,
+        task_name: name, hours, day };
+    }).filter(Boolean);
+  }
+
   // Rang d'un jour dans son mois : 1 à 4, ou 5 pour un 5ᵉ (toujours le dernier).
   const monthlyRank = (date) => Math.ceil(date.getDate() / 7);
   const isLastOfMonth = (date) => addDays(date, 7).getMonth() !== date.getMonth();
@@ -617,7 +662,7 @@
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, suggestionContext, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

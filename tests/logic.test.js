@@ -1236,3 +1236,78 @@ describe('bloc-notes de la semaine (Lot 25)', () => {
     assert.equal(L.continueList('', 0), null);
   });
 });
+
+describe('suggestions de tâches par l’IA (Lot 26)', () => {
+  const projects = [
+    project('p-old', 'Flyers', 'Bobo', 'termine'),
+    project('p-site', 'Refonte site', 'Acme'),
+    project('p-logo', 'Logo', 'Bobo'),
+  ];
+  const tasks = [
+    task({ id: 't-parked', project_id: 'p-logo', task_name: 'Déclinaisons', day_of_week: null, estimated_hours: 2 }),
+    task({ id: 't-planned', project_id: 'p-site', task_name: 'Maquette accueil', day_of_week: 'Mardi', estimated_hours: 3 }),
+  ];
+  const s = (over) => ({ kind: 'new_task', project_id: '', new_client: '', new_project: '', task_id: '', task_name: '', estimated_hours: 1, day: '', note_excerpt: '', reason: '', ...over });
+
+  test('suggestionContext : projets en cours d’abord, tâches avec leur jour ou « sas »', () => {
+    const ctx = L.suggestionContext('  - Acme : maquettes  ', '2026-10-19', projects, tasks);
+    assert.equal(ctx.note, '- Acme : maquettes');
+    assert.equal(ctx.week_start, '2026-10-19');
+    assert.deepEqual(ctx.projects.map((p) => [p.id, p.status]), [['p-site', 'en cours'], ['p-logo', 'en cours'], ['p-old', 'archivé']]);
+    assert.deepEqual(ctx.projects[0], { id: 'p-site', client: 'Acme', name: 'Refonte site', type: '', status: 'en cours' });
+    assert.deepEqual(ctx.tasks.map((t) => [t.id, t.day, t.hours]), [['t-parked', 'sas', 2], ['t-planned', 'Mardi', 3]]);
+  });
+
+  test('nouvelle tâche dans un projet connu : sas par défaut, heures au quart d’heure', () => {
+    const [r] = L.reviewSuggestions([s({ project_id: 'p-site', task_name: 'Intégration header', estimated_hours: 1.3, note_excerpt: 'intégration' })], projects, tasks);
+    assert.equal(r.kind, 'new');
+    assert.equal(r.projectId, 'p-site');
+    assert.equal(r.day, '');
+    assert.equal(r.hours, 1.25);
+    assert.equal(r.excerpt, 'intégration');
+  });
+
+  test('jour cité gardé, jour inconnu ignoré, heures absentes : 1 h', () => {
+    const [a, b] = L.reviewSuggestions([
+      s({ project_id: 'p-site', task_name: 'A', day: 'Jeudi', estimated_hours: 0 }),
+      s({ project_id: 'p-site', task_name: 'B', day: 'Samedi' }),
+    ], projects, tasks);
+    assert.equal(a.day, 'Jeudi');
+    assert.equal(a.hours, 1);
+    assert.equal(b.day, '');
+  });
+
+  test('tâche du sas : à planifier (jour cité, sinon Lundi) ; déjà planifiée : pour information', () => {
+    const [plan, planned] = L.reviewSuggestions([
+      s({ kind: 'plan_existing', task_id: 't-parked', project_id: 'p-logo', task_name: 'Déclinaisons' }),
+      s({ kind: 'plan_existing', task_id: 't-planned', day: 'Jeudi' }),
+    ], projects, tasks);
+    assert.deepEqual([plan.kind, plan.taskId, plan.day, plan.hours], ['plan', 't-parked', 'Lundi', 2]);
+    assert.deepEqual([planned.kind, planned.day], ['planned', 'Mardi']);
+  });
+
+  test('une « nouvelle » tâche qui existe déjà dans le projet devient la tâche existante', () => {
+    const [r] = L.reviewSuggestions([s({ project_id: 'p-logo', task_name: 'déclinaisons ', day: 'Mercredi' })], projects, tasks);
+    assert.deepEqual([r.kind, r.taskId, r.day], ['plan', 't-parked', 'Mercredi']);
+  });
+
+  test('projet inconnu : nouveau projet si nommé, sinon écarté ; doublons et noms vides écartés', () => {
+    const list = L.reviewSuggestions([
+      s({ new_client: 'Globex', new_project: 'Salon', task_name: 'Kakémono' }),
+      s({ new_client: 'globex', new_project: 'salon', task_name: 'kakémono' }),
+      s({ project_id: 'inconnu', task_name: 'Sans projet' }),
+      s({ project_id: 'p-site', task_name: '  ' }),
+      s({ kind: 'plan_existing', task_id: 't-parked' }),
+      s({ kind: 'plan_existing', task_id: 't-parked' }),
+    ], projects, tasks);
+    assert.deepEqual(list.map((r) => [r.kind, r.newClient ?? '', r.newProject ?? '', r.task_name]),
+      [['new', 'Globex', 'Salon', 'Kakémono'], ['plan', '', '', 'Déclinaisons']]);
+  });
+
+  test('projet connu : les champs « nouveau projet » sont ignorés ; réponse invalide : aucune suggestion', () => {
+    const [r] = L.reviewSuggestions([s({ project_id: 'p-old', new_client: 'X', new_project: 'Y', task_name: 'Réimpression' })], projects, tasks);
+    assert.deepEqual([r.projectId, r.newClient, r.newProject], ['p-old', '', '']);
+    assert.deepEqual(L.reviewSuggestions(null, projects, tasks), []);
+    assert.deepEqual(L.reviewSuggestions([null, 3], projects, tasks), []);
+  });
+});

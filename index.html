@@ -75,9 +75,14 @@
           placeholder="Les projets prévus cette semaine, avant de les placer dans le planning…&#10;&#10;- Acme · Refonte site : maquettes, intégration&#10;- Bobo · Logo : déclinaisons"
           class="min-h-0 flex-1 w-full resize-none px-4 py-3 text-sm leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none"></textarea>
         <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-slate-100">
-          <span id="notes-status" role="status" class="text-xs text-slate-500"></span>
+          <span id="notes-status" role="status" class="min-w-0 flex-1 basis-40 text-xs text-slate-500"></span>
           <button id="notes-reuse" type="button" title="Copier ici la note de la semaine précédente"
-            class="hidden ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Reprendre la semaine précédente</button>
+            class="hidden px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Reprendre la semaine précédente</button>
+          <button id="notes-suggest" type="button" data-lot="Lot 26" title="L’IA lit la note et propose les tâches à créer dans le sas ou à planifier"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-900 transition">
+            <svg viewBox="0 0 16 16" aria-hidden="true" class="w-3.5 h-3.5" fill="currentColor"><path d="M8 1l1.5 3.9L13.5 6 9.5 7.6 8 11.5 6.5 7.6 2.5 6l4-1.1L8 1zm4.5 8l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z"/></svg>
+            Suggérer des tâches
+          </button>
         </div>
       </div>
     </aside>
@@ -514,6 +519,28 @@
         <button type="button" id="gcal-cancel" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
         <button type="button" id="gcal-import" disabled
           class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-900 transition">Importer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Suggestions de tâches tirées du bloc-notes par l'IA : à valider une par une -->
+  <dialog id="suggest-dialog" aria-labelledby="suggest-title" data-lot="Lot 26"
+    class="m-auto w-[94vw] max-w-4xl rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <div class="p-5 space-y-4">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h2 id="suggest-title" class="text-base font-semibold tracking-tight">Suggestions de tâches</h2>
+          <p id="suggest-week" class="text-sm text-slate-500"></p>
+        </div>
+        <button type="button" id="suggest-close" class="text-slate-400 hover:text-slate-900 text-xl leading-none" aria-label="Fermer">×</button>
+      </div>
+      <p id="suggest-status" role="status" class="flex items-center gap-2 text-sm text-slate-600"></p>
+      <ul id="suggest-list" class="hidden max-h-[60vh] overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100"></ul>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <p class="mr-auto text-xs text-slate-500">Rien n’est créé sans validation. Les nouvelles tâches vont dans le sas, sauf si tu choisis un jour.</p>
+        <button type="button" id="suggest-cancel" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+        <button type="button" id="suggest-apply" disabled
+          class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-900 transition">Appliquer</button>
       </div>
     </div>
   </dialog>
