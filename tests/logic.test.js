@@ -723,6 +723,20 @@ describe('weekSnapshot', () => {
     const t = task({ is_completed: true, client_name: 'Ancien nom', projects: { clients: { name: 'Nouveau nom' } } });
     assert.equal(L.weekSnapshot([t]).by_client[0].client, 'Nouveau nom');
   });
+
+  test('les terminées comptent leur temps passé, les reportées leurs heures prévues', () => {
+    const list = [
+      task({ id: 'a', is_completed: true, estimated_hours: 2, actual_hours: 3.5, client_name: 'Acme' }),
+      task({ id: 'b', is_completed: true, estimated_hours: 1, actual_hours: null, client_name: 'Acme' }),
+      task({ id: 'c', is_completed: false, estimated_hours: 4, actual_hours: 1, day_of_week: 'Jeudi', client_name: 'Acme' }),
+    ];
+    const at = '2026-10-19T10:00:00.000Z';
+    const consigned = [task({ id: 'k', is_completed: true, estimated_hours: 2, actual_hours: 0, client_name: 'Beta', consigned_at: at, archived_at: at })];
+    const s = L.weekSnapshot(list, [], consigned);
+    assert.equal(s.finished_hours, 4.5);
+    assert.equal(s.carried_hours, 4);
+    assert.deepEqual(s.by_client.map((c) => [c.client, c.hours]), [['Acme', 4.5], ['Beta', 0]]);
+  });
 });
 
 describe('weekPeriods', () => {

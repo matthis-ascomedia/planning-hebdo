@@ -28,6 +28,16 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.24.1', type: 'patch', lot: 'Lot 24', date: '2026-10-20',
+    items: [
+      'Commentaires d’une carte : le texte garde toute la largeur, les boutons « → note » et × apparaissent par-dessus au survol.',
+      'Historique et détail d’un projet : les heures prévues sont suivies du temps passé quand il diffère.',
+      'Les prochaines semaines closes comptent le temps passé des tâches terminées (heures prévues à défaut) dans leur total et le temps par client.',
+      'Archives : les boutons « Rétablir » et « Supprimer » restent alignés à droite des tâches consignées.',
+      '« Nouvelle Semaine » : messages accordés au nombre de tâches, tâches consignées mentionnées aussi quand des commentaires restent à traiter.',
+    ],
+  },
+  {
     version: '1.24.0', type: 'mineure', lot: 'Lot 24', date: '2026-10-19',
     items: [
       'Archives : un bouton « Supprimer » sur chaque projet archivé et chaque tâche consignée, avec une confirmation qui détaille ce qui part.',
@@ -592,20 +602,23 @@ function commentBadgeHTML(t) {
     class="inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 tabular-nums transition ${cls}">${BUBBLE}${pending || total}</button>`;
 }
 
-// Une note n'a pas de case à cocher ; un point à traiter oui. Le bouton de droite (au survol) change la nature.
+// Une note n'a pas de case à cocher ; un point à traiter oui. Les boutons de droite (au survol, en surimpression :
+// le texte garde toute la largeur) changent la nature du commentaire ou le suppriment.
 function commentHTML(c) {
   const lead = c.is_note
     ? '<span class="mt-px w-[15px] shrink-0 text-center text-slate-300 leading-none" title="Note" aria-label="Note">•</span>'
     : `<input type="checkbox" class="chk mt-px" ${c.is_done ? 'checked' : ''} data-comment-toggle="${c.id}" aria-label="Commentaire traité" />`;
   const kind = c.is_note ? 'à traiter' : 'note';
   return `
-    <li class="group/c flex items-start gap-1.5 text-xs" data-lot="Lot 20">
+    <li class="group/c relative flex items-start gap-1.5 text-xs" data-lot="Lot 20">
       ${lead}
       <span class="min-w-0 flex-1 break-words whitespace-pre-line ${c.is_done ? 'line-through text-slate-400' : 'text-slate-700'}">${esc(c.body)}</span>
-      <button type="button" class="opacity-0 group-hover/c:opacity-100 focus-visible:opacity-100 text-[10px] font-medium text-slate-400 hover:text-slate-800 whitespace-nowrap leading-none transition"
-              data-comment-kind="${c.id}" title="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}" aria-label="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}">→ ${kind}</button>
-      <button type="button" class="opacity-0 group-hover/c:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 leading-none transition"
-              data-delete-comment="${c.id}" title="Supprimer le commentaire" aria-label="Supprimer le commentaire">×</button>
+      <span class="absolute -top-0.5 right-0 flex items-center gap-1.5 rounded bg-white/95 px-1 py-0.5 shadow-sm ring-1 ring-slate-200 opacity-0 group-hover/c:opacity-100 focus-within:opacity-100 transition">
+        <button type="button" class="text-[10px] font-medium text-slate-500 hover:text-slate-900 whitespace-nowrap leading-none"
+                data-comment-kind="${c.id}" title="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}" aria-label="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}">→ ${kind}</button>
+        <button type="button" class="text-slate-400 hover:text-red-500 leading-none"
+                data-delete-comment="${c.id}" title="Supprimer le commentaire" aria-label="Supprimer le commentaire">×</button>
+      </span>
     </li>`;
 }
 
@@ -880,17 +893,21 @@ function renderArchives() {
         const week = weeks.find((w) => w.id === t.week_id);
         const spent = hoursSpent(t);
         return `
-          <li class="flex flex-wrap items-center gap-x-3 gap-y-1 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
-            <span class="min-w-0 flex-1 basis-48">
+          <li class="flex flex-wrap items-center gap-x-3 gap-y-2 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
+            <span class="min-w-0 flex-1 basis-56">
               <span class="block text-xs text-slate-500 truncate">${esc(taskClient(t))} · ${esc(taskProject(t))}</span>
               <span class="block text-sm font-medium truncate">${esc(t.task_name)}</span>
+              <span class="block text-xs text-slate-500 tabular-nums">
+                <span title="Heures prévues puis temps passé">${fmtH(t.estimated_hours)} prévues · <span class="font-medium ${spent > (+t.estimated_hours || 0) ? 'text-amber-700' : 'text-slate-700'}">${fmtH(spent)} passées</span></span>
+                · ${esc(fmtDate(t.consigned_at, SHORT_DATE))} · ${week ? `semaine close le ${esc(fmtDate(week.closed_at, SHORT_DATE))}` : 'prochaine semaine'}
+              </span>
             </span>
-            <span class="text-xs text-slate-600 tabular-nums" title="Heures prévues puis temps passé">${fmtH(t.estimated_hours)} prévues · <span class="font-medium ${spent > (+t.estimated_hours || 0) ? 'text-amber-700' : ''}">${fmtH(spent)} passées</span></span>
-            <span class="text-xs text-slate-500">${esc(fmtDate(t.consigned_at, SHORT_DATE))} · ${week ? `semaine close le ${esc(fmtDate(week.closed_at, SHORT_DATE))}` : 'prochaine semaine'}</span>
-            ${canUnconsign(t) ? `<button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
-                    data-unconsign="${t.id}" title="Remettre la tâche dans le planning">Rétablir</button>` : ''}
-            <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
-                    data-delete-consigned="${t.id}" title="Supprimer définitivement la tâche" aria-label="Supprimer définitivement la tâche ${esc(t.task_name)}">Supprimer</button>
+            <span class="ml-auto flex shrink-0 items-center gap-1.5">
+              ${canUnconsign(t) ? `<button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
+                      data-unconsign="${t.id}" title="Remettre la tâche dans le planning">Rétablir</button>` : ''}
+              <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
+                      data-delete-consigned="${t.id}" title="Supprimer définitivement la tâche" aria-label="Supprimer définitivement la tâche ${esc(t.task_name)}">Supprimer</button>
+            </span>
           </li>`;
       }).join('')}</ul>`
     : '<p class="text-sm text-slate-400">Aucune tâche consignée : « Consigner » apparaît sur une tâche terminée du planning.</p>';
@@ -1569,10 +1586,13 @@ $('#new-week').addEventListener('click', () => {
   weekPending = finishedWithPending(tasks, comments);
   const finished = tasks.filter((t) => t.is_completed).length;
   const consigned = consignedPending(history).length;
+  const s = (n) => (n > 1 ? 's' : '');
   if (!weekPending.length) {
     const recorded = finished || consigned;
+    const parts = [finished && `archiver ${plural(finished, 'tâche')} terminée${s(finished)}`,
+      consigned && `compter ${plural(consigned, 'tâche')} déjà consignée${s(consigned)}`].filter(Boolean);
     const question = recorded
-      ? `Nouvelle semaine : archiver ${finished} tâche(s) terminée(s)${consigned ? ` et compter ${consigned} tâche(s) déjà consignée(s)` : ''}, enregistrer la semaine dans l'historique et ramener les autres sur Lundi ?`
+      ? `Nouvelle semaine : ${parts.join(' et ')}, enregistrer la semaine dans l’historique et ramener les autres sur Lundi ?`
       : 'Aucune tâche terminée : rien à archiver, aucune semaine ne sera enregistrée. Ramener les tâches planifiées sur Lundi ?';
     askConfirm({ title: 'Nouvelle semaine', message: question, confirmLabel: recorded ? 'Archiver et continuer' : 'Ramener sur Lundi' })
       .then((ok) => { if (ok) startNewWeek(); });
@@ -1585,9 +1605,10 @@ $('#new-week').addEventListener('click', () => {
       <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5 tabular-nums">${BUBBLE}${count}</span>
     </li>`).join('');
   const others = finished - weekPending.length;
-  $('#week-summary').textContent = `${finished} tâche${finished > 1 ? 's' : ''} terminée${finished > 1 ? 's' : ''} au total`
+  $('#week-summary').textContent = `${finished} tâche${s(finished)} terminée${s(finished)} au total`
     + (others > 1 ? ` : les ${others} autres seront archivées dans tous les cas.`
-      : others ? ' : l’autre sera archivée dans tous les cas.' : '.');
+      : others ? ' : l’autre sera archivée dans tous les cas.' : '.')
+    + (consigned ? ` ${plural(consigned, 'tâche')} déjà consignée${s(consigned)} ${consigned > 1 ? 'seront aussi comptées' : 'sera aussi comptée'} dans la semaine.` : '');
   $('#week-keep').title = weekPending.length > 1 ? 'Garder ces tâches dans le planning cette semaine' : 'Garder cette tâche dans le planning cette semaine';
   weekDialog.showModal();
 });
@@ -1799,8 +1820,7 @@ function openProject(id, { keepForm = false } = {}) {
         <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
         ${labelChipsHTML(t)}
         <span class="text-xs text-slate-500">${esc(status)}</span>
-        <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}${t.actual_hours != null && +t.actual_hours !== +t.estimated_hours
-          ? ` <span class="${+t.actual_hours > +t.estimated_hours ? 'text-amber-700' : 'text-slate-500'}" title="Temps passé" data-lot="Lot 22">→ ${fmtH(t.actual_hours)}</span>` : ''}</span>
+        ${hoursHTML(t)}
       </div>
       ${list.length ? `<ul class="mt-1 pl-3 space-y-1" data-lot="Lot 10">${list.map(commentHTML).join('')}</ul>` : ''}
     </li>`;
@@ -1815,6 +1835,10 @@ function openProject(id, { keepForm = false } = {}) {
     : '<li class="text-sm text-slate-400 py-1">Aucune tâche rattachée.</li>';
   if (!projectDialog.open) projectDialog.showModal();
 }
+
+// Heures prévues d'une tâche, suivies du temps passé s'il diffère (ambre au-delà du prévu).
+const hoursHTML = (t) => `<span class="shrink-0 text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}${t.actual_hours != null && +t.actual_hours !== +t.estimated_hours
+  ? ` <span class="${+t.actual_hours > +t.estimated_hours ? 'text-amber-700' : 'text-slate-500'}" title="Temps passé" data-lot="Lot 22">→ ${fmtH(t.actual_hours)}</span>` : ''}</span>`;
 
 projectDialog.addEventListener('click', (e) => { if (e.target === projectDialog) projectDialog.close(); });
 
@@ -2041,7 +2065,7 @@ function weekHTML(w) {
   return `
     <details class="group bg-white border border-slate-200 rounded-xl shadow-sm" data-week="${w.id}" ${openWeeks.has(w.id) ? 'open' : ''}>
       <summary class="flex flex-wrap items-center gap-x-4 gap-y-1 p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <span class="min-w-0 flex-1">
+        <span class="min-w-0 flex-1 basis-56">
           <span class="block text-sm font-semibold first-letter:uppercase">Semaine close le ${esc(fmtDate(w.closed_at, LONG_DATE))}</span>
           <span class="block text-xs text-slate-500">${w.from ? `Du ${esc(fmtDate(w.from, SHORT_DATE))} au ${esc(fmtDate(w.closed_at, SHORT_DATE))}` : 'Première semaine enregistrée'}</span>
         </span>
@@ -2074,7 +2098,7 @@ function weekHTML(w) {
                 <div class="flex items-center gap-2 text-sm">
                   <span class="min-w-0 flex-1 truncate">${esc(t.task_name)}</span>
                   ${labelChipsHTML(t)}
-                  <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+                  ${hoursHTML(t)}
                   <button type="button" data-lot="Lot 21" data-duplicate-history="${t.id}"
                     class="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-900 focus-visible:text-slate-900 transition"
                     title="Dupliquer dans le sas d’attente (semaine active)" aria-label="Dupliquer « ${esc(t.task_name)} » dans le sas d’attente">${COPY_ICON}</button>
@@ -3047,6 +3071,7 @@ $('#logout').addEventListener('click', () => {
   recurrences = [];
   openComments.clear();
   openWeeks.clear();
+  todoDrafts.clear();
   setAuthed(false);
 });
 

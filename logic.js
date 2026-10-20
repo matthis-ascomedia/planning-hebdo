@@ -345,6 +345,7 @@
   // Instantané enregistré à « Nouvelle Semaine » (avant archivage) : tâches terminées archivées,
   // tâches planifiées reportées (gardées comprises ; le sas n'est ni l'un ni l'autre), répartition par client.
   // `consigned` : tâches consignées en attente de cette clôture (Lot 23), comptées comme terminées de la semaine.
+  // Les terminées comptent leur temps effectif (temps passé, sinon heures prévues) ; les reportées, leurs heures prévues.
   function weekSnapshot(tasks, keepIds = [], consigned = []) {
     const kept = new Set(keepIds);
     const finished = tasks.filter((t) => t.is_completed && !kept.has(t.id)).concat(consigned);
@@ -354,12 +355,12 @@
       const name = t.projects?.clients?.name ?? t.client_name ?? '';
       const row = byClient.get(name) || { client: name, count: 0, hours: 0 };
       row.count += 1;
-      row.hours += hoursOf(t);
+      row.hours += hoursSpent(t);
       byClient.set(name, row);
     });
     return {
       finished_count: finished.length,
-      finished_hours: sumHours(finished),
+      finished_hours: sumSpent(finished),
       carried_count: carried.length,
       carried_hours: sumHours(carried),
       by_client: [...byClient.values()].sort((a, b) => b.hours - a.hours || a.client.localeCompare(b.client)),
