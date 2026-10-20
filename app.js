@@ -7,7 +7,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
-  clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
+  clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
   comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, suggestionContext, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
@@ -27,6 +27,13 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.27.0', type: 'mineure', lot: 'Lot 27', date: '2026-10-20',
+    items: [
+      'Planning : une tâche cochée passe sous les tâches à faire de son conteneur ; un conteneur entièrement coché passe en bas de la journée.',
+      'Décocher une tâche la remet à sa place ; toutes les tâches restent déplaçables par glisser-déposer.',
+    ],
+  },
   {
     version: '1.26.0', type: 'mineure', lot: 'Lot 26', date: '2026-10-20',
     items: [
@@ -1462,14 +1469,14 @@ board.addEventListener('drop', (e) => {
 });
 
 // Place des tâches (une, ou tout un conteneur) dans un jour, leur conteneur à la position `at` ;
-// renumérote les conteneurs de ce jour (group_rank 1..n).
+// renumérote les conteneurs de ce jour (group_rank 1..n). Les conteneurs entièrement cochés restent en bas (Lot 27).
 function placeInDay(moving, day, at) {
   const key = clientKey(moving[0]);
   const prev = moving.map((t) => ({ t, day: t.day_of_week }));
   const ranks = tasks.map((t) => ({ t, rank: t.group_rank ?? null }));
   moving.forEach((t) => { t.day_of_week = day; });
   const groups = groupDay(tasks.filter((t) => t.day_of_week === day), labels);
-  const order = placeAt(groups.map((g) => g.key), key, at).map((k) => groups.find((g) => g.key === k));
+  const order = doneLast(placeAt(groups.map((g) => g.key), key, at).map((k) => groups.find((g) => g.key === k)));
   const patches = rankPatches(order);
   patches.forEach((p) => p.ids.forEach((id) => { tasks.find((t) => t.id === id).group_rank = p.rank; }));
   const changedDay = prev.filter((x) => x.day !== day).map((x) => x.t.id);
@@ -3276,7 +3283,7 @@ const TOURS = {
         content: 'Choisis « Chaque semaine » ou « Chaque mois » (ex. le 1ᵉʳ mardi) : « Nouvelle Semaine » recréera la tâche quand il le faut. Une occurrence non faite reste sur son jour. Les séries se retrouvent dans Réglages.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
-        content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
+        content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée : elle passe sous les tâches à faire.' },
       { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 20',
         title: 'Notes et points à traiter',
         content: 'Écris directement sur une carte (Entrée pour l’ajouter) : c’est une simple note. Active « À traiter » pour créer un point à cocher ; le compteur ambre indique ceux qui restent à traiter. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },

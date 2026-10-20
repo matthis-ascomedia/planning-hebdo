@@ -109,6 +109,7 @@
 
   // Ordre manuel (glisser-déposer) : un groupe a pour rang le plus petit `group_rank` de ses tâches.
   // Les groupes classés passent d'abord (par rang), les autres ensuite dans l'ordre par défaut.
+  // Tâches cochées (Lot 27) : sous les tâches à faire de leur groupe ; un groupe entièrement coché passe sous les autres.
   function groupDay(tasks, labels) {
     const groups = new Map();
     tasks.forEach((t) => {
@@ -119,17 +120,23 @@
       if (!g.projects.includes(project)) g.projects.push(project);
       g.tasks.push(t);
     });
-    const firstMeeting = (g) => g.tasks.find((t) => t.start_time && isMeeting(t, labels))?.start_time ?? null;
+    const open = (g) => g.tasks.filter((t) => !t.is_completed);
+    const firstMeeting = (g) => (open(g).length ? open(g) : g.tasks).find((t) => t.start_time && isMeeting(t, labels))?.start_time ?? null;
     const rankOf = (g) => {
       const ranks = g.tasks.map((t) => t.group_rank).filter((r) => r != null);
       return ranks.length ? Math.min(...ranks) : null;
     };
     const byDefault = (a, b) => (a.at && b.at ? a.at.localeCompare(b.at) : a.at ? -1 : b.at ? 1 : 0) || a.order - b.order;
-    return [...groups.values()]
-      .map((g, i) => ({ ...g, tasks: sortDay(g.tasks, labels), order: i, at: firstMeeting(g), rank: rankOf(g) }))
-      .sort((a, b) => (a.rank != null && b.rank != null ? a.rank - b.rank : a.rank != null ? -1 : b.rank != null ? 1 : byDefault(a, b)))
+    const byRank = (a, b) => (a.rank != null && b.rank != null ? a.rank - b.rank : a.rank != null ? -1 : b.rank != null ? 1 : byDefault(a, b));
+    return doneLast([...groups.values()]
+      .map((g, i) => ({ ...g, tasks: doneLast(sortDay(g.tasks, labels)), order: i, at: firstMeeting(g), rank: rankOf(g) }))
+      .sort(byRank))
       .map(({ order, at, rank, ...g }) => g);
   }
+
+  // Tâches cochées après les autres, ou groupes entièrement cochés après les autres ; ordre conservé de part et d'autre.
+  const isDone = (x) => (x.tasks ? x.tasks.every((t) => t.is_completed) : !!x.is_completed);
+  const doneLast = (list) => list.filter((x) => !isDone(x)).concat(list.filter(isDone));
 
   // Ordre de clés après déplacement de `key` à la position `index` (calculée sans elle).
   function placeAt(keys, key, index) {
@@ -661,7 +668,7 @@
 
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
-    clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
+    clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
     comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, suggestionContext, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,

@@ -1311,3 +1311,55 @@ describe('suggestions de tâches par l’IA (Lot 26)', () => {
     assert.deepEqual(L.reviewSuggestions([null, 3], projects, tasks), []);
   });
 });
+
+describe('tâches cochées en bas (Lot 27)', () => {
+  const labels = [{ id: 'meet', name: 'Réunion', color: 'bleu', is_meeting: true, position: 1 }];
+  const t = (id, clientId, extra = {}) => task({
+    id, client_name: clientId, project_name: 'P', projects: { id: 'p', name: 'P', clients: { id: clientId, name: clientId } }, ...extra,
+  });
+
+  test('dans un conteneur, les tâches cochées passent sous les tâches à faire (réunions comprises)', () => {
+    const list = [
+      t('a', 'c1', { is_completed: true }),
+      t('m', 'c1', { label_ids: ['meet'], start_time: '09:00', is_completed: true }),
+      t('b', 'c1'),
+      t('n', 'c1', { label_ids: ['meet'], start_time: '14:00' }),
+    ];
+    assert.deepEqual(L.groupDay(list, labels)[0].tasks.map((x) => x.id), ['n', 'b', 'm', 'a']);
+  });
+
+  test('un conteneur entièrement coché passe sous les autres, quel que soit son rang', () => {
+    const list = [
+      t('a', 'c1', { is_completed: true, group_rank: 1 }),
+      t('b', 'c2', { group_rank: 2 }),
+      t('c', 'c3', { is_completed: true }),
+      t('d', 'c3'), // c3 a encore une tâche à faire
+      t('e', 'c4', { is_completed: true, group_rank: 3 }),
+    ];
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c2', 'c3', 'c1', 'c4']);
+  });
+
+  test('une réunion déjà faite ne place plus son conteneur en tête de journée', () => {
+    const list = [
+      t('a', 'c1'),
+      t('m', 'c2', { label_ids: ['meet'], start_time: '08:00', is_completed: true }),
+      t('b', 'c2'),
+    ];
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c1', 'c2']);
+  });
+
+  test('décochée, la tâche retrouve sa place', () => {
+    const list = [t('a', 'c1', { group_rank: 1 }), t('b', 'c2', { group_rank: 2 })];
+    list[0].is_completed = true;
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c2', 'c1']);
+    list[0].is_completed = false;
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c1', 'c2']);
+  });
+
+  test('doneLast : ordre conservé de part et d’autre, tâches ou conteneurs', () => {
+    const tasks = [{ id: 1, is_completed: true }, { id: 2 }, { id: 3, is_completed: true }, { id: 4 }];
+    assert.deepEqual(L.doneLast(tasks).map((x) => x.id), [2, 4, 1, 3]);
+    const groups = [{ key: 'a', tasks: [{ is_completed: true }] }, { key: 'b', tasks: [{ is_completed: true }, {}] }];
+    assert.deepEqual(L.doneLast(groups).map((g) => g.key), ['b', 'a']);
+  });
+});
