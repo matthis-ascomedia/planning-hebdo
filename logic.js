@@ -264,6 +264,31 @@
   const planningMonday = (date) => ([0, 6].includes(date.getDay()) ? comingMonday(date) : addDays(midnight(date), 1 - date.getDay()));
   const dayDate = (monday, day) => addDays(monday, DAYS.indexOf(day));
 
+  // ---- Bloc-notes de la semaine (Lot 25) ----
+  // Une note par semaine, repérée par le lundi de la semaine planifiée (« AAAA-MM-JJ », date locale).
+  const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const keyDate = (key) => { const [y, m, d] = String(key).split('-').map(Number); return new Date(y, m - 1, d); };
+  const weekKey = (date) => isoDay(planningMonday(date));
+  const shiftWeek = (key, n) => isoDay(addDays(keyDate(key), 7 * n));
+  // Écart en semaines entre deux lundis (positif : `key` est après `ref`), insensible aux changements d'heure.
+  const weekOffset = (key, ref) => {
+    const utc = (k) => { const d = keyDate(k); return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()); };
+    return Math.round((utc(key) - utc(ref)) / (7 * 86400000));
+  };
+
+  // Entrée dans le bloc-notes, curseur en `caret` : sur une ligne de liste (« - », « * », « • », « 1. », « 1) »),
+  // la liste continue à la ligne suivante (numéro + 1) ; sur une puce vide, la puce est retirée (fin de liste).
+  // Renvoie la modification { from, to, insert } à appliquer, ou null pour un retour à la ligne normal.
+  function continueList(text, caret) {
+    const start = text.lastIndexOf('\n', caret - 1) + 1;
+    const m = text.slice(start, caret).match(/^(\s*)(?:([-*•])|(\d{1,3})([.)]))\s+(.*)$/);
+    if (!m) return null;
+    const [, indent, bullet, num, sep, rest] = m;
+    const after = text.slice(caret).split('\n')[0];
+    if (!rest.trim() && !after.trim()) return { from: start, to: caret, insert: '' };
+    return { from: caret, to: caret, insert: `\n${indent}${bullet || `${Number(num) + 1}${sep}`} ` };
+  }
+
   // Rang d'un jour dans son mois : 1 à 4, ou 5 pour un 5ᵉ (toujours le dernier).
   const monthlyRank = (date) => Math.ceil(date.getDate() / 7);
   const isLastOfMonth = (date) => addDays(date, 7).getMonth() !== date.getMonth();
@@ -592,7 +617,7 @@
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

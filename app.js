@@ -8,7 +8,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -27,6 +27,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.25.0', type: 'mineure', lot: 'Lot 25', date: '2026-10-20',
+    items: [
+      'Bloc-notes de la semaine : une pastille sur le bord gauche déplie un volet pour noter les projets prévus avant de les placer dans le planning.',
+      'Enregistrement automatique pendant la saisie (gardé sur l’appareil en cas de coupure réseau) ; une note par semaine, ‹ › pour consulter les autres.',
+      'Entrée prolonge une liste à puces ou numérotée ; « Reprendre la semaine précédente » recopie la note d’avant dans une note vide.',
+    ],
+  },
   {
     version: '1.24.1', type: 'patch', lot: 'Lot 24', date: '2026-10-20',
     items: [
@@ -248,6 +256,7 @@ let weeks = []; // semaines closes par « Nouvelle Semaine » (instantanés)
 let projectTypes = []; // types de projet par défaut (Réglages), ordonnés par position
 let labels = []; // étiquettes de tâche (Réglages), ordonnées par position = priorité visuelle
 let recurrences = []; // séries de tâches récurrentes (règle + modèle)
+let notes = []; // bloc-notes : une note par semaine (week_notes, Lot 25)
 const openWeeks = new Set(); // fiches de semaine dépliées dans l'historique
 const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
 const todoDrafts = new Set(); // cartes dont le prochain commentaire est « à traiter » (par défaut : une note)
@@ -300,15 +309,17 @@ function headers(extra) {
   };
 }
 
-async function api(table, query = '', { method = 'GET', body, prefer } = {}, retried = false) {
+// `keepalive` : la requête aboutit même si la page se ferme (enregistrement du bloc-notes).
+async function api(table, query = '', { method = 'GET', body, prefer, keepalive = false } = {}, retried = false) {
   const res = await fetch(`${REST}/${table}${query}`, {
     method,
     headers: headers(prefer ? { Prefer: prefer } : undefined),
     body: body ? JSON.stringify(body) : undefined,
+    keepalive,
   });
   if (res.status === 401 && session && !retried) {
     try { await refreshSession(); } catch { setAuthed(false); throw new Error('Session expirée, reconnecte-toi.'); }
-    return api(table, query, { method, body, prefer }, true);
+    return api(table, query, { method, body, prefer, keepalive }, true);
   }
   if (!res.ok) throw new Error(`Supabase ${res.status} : ${await res.text()}`);
   return res.status === 204 ? null : res.json();
@@ -329,6 +340,8 @@ const db = {
   listTypes: () => api('project_types', '?select=*&order=position.asc'),
   listLabels: () => api('labels', '?select=*&order=position.asc'),
   listRecurrences: () => api('recurrences', '?select=*&order=created_at.asc'),
+  listNotes: () => api('week_notes', '?select=*&order=week_start.desc'),
+  saveNote: (row, opts) => api('week_notes', '?on_conflict=week_start', { method: 'POST', body: row, prefer: 'resolution=merge-duplicates,return=representation', ...opts }),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -2838,6 +2851,174 @@ $('#gcal-close').addEventListener('click', closeGcal);
 $('#gcal-cancel').addEventListener('click', closeGcal);
 gcalDialog.addEventListener('click', (e) => { if (e.target === gcalDialog) closeGcal(); });
 
+// ---------- Bloc-notes de la semaine (Lot 25) ----------
+// Volet gauche masqué par défaut. Une note par semaine, enregistrée après une pause de saisie, au repli du volet,
+// au changement de semaine et quand la page passe en arrière-plan. Un brouillon local protège la saisie tant
+// qu'elle n'est pas enregistrée (réseau coupé, page fermée) : il est renvoyé à la connexion suivante.
+const NOTE_DRAFT_KEY = 'planning_note_draft';
+const notesPanel = $('#notes-panel');
+const notesText = $('#notes-text');
+let noteWeek = weekKey(new Date()); // semaine affichée
+let noteDirty = false; // saisie pas encore enregistrée
+let noteTimer = null;
+let noteQueue = Promise.resolve(); // un enregistrement à la fois, dans l'ordre
+
+const noteOf = (week) => notes.find((n) => n.week_start === week);
+const notesOpen = () => notesPanel.dataset.open === 'true';
+const RELATIVE_WEEK = { '-1': 'semaine dernière', 0: 'cette semaine', 1: 'semaine prochaine' };
+
+function noteStatus(msg, error = false) {
+  const el = $('#notes-status');
+  el.textContent = msg;
+  el.classList.toggle('text-red-700', error);
+  el.classList.toggle('text-slate-500', !error);
+}
+
+function setNotesOpen(open) {
+  notesPanel.dataset.open = String(open);
+  notesPanel.classList.toggle('-translate-x-full', !open);
+  $('#notes-body').inert = !open;
+  $('#notes-tab').setAttribute('aria-expanded', String(open));
+  $('#notes-tab').title = open ? 'Replier le bloc-notes' : 'Bloc-notes de la semaine';
+  if (open) {
+    renderNotes();
+    notesText.focus();
+  } else {
+    saveNote();
+  }
+}
+
+// « Reprendre la semaine précédente » : seulement sur une note vide, si la précédente a du contenu.
+function syncNoteReuse() {
+  const previous = noteOf(shiftWeek(noteWeek, -1))?.body ?? '';
+  $('#notes-reuse').classList.toggle('hidden', !!notesText.value.trim() || !previous.trim());
+}
+
+// En-tête de la semaine affichée ; le texte n'est remplacé que s'il n'y a pas de saisie en attente.
+function renderNotes() {
+  const offset = weekOffset(noteWeek, weekKey(new Date()));
+  const monday = new Date(`${noteWeek}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
+  $('#notes-week').textContent = `Semaine du ${monday}${RELATIVE_WEEK[offset] ? ` · ${RELATIVE_WEEK[offset]}` : ''}`;
+  $('#notes-today').classList.toggle('hidden', offset === 0);
+  if (!noteDirty) notesText.value = noteOf(noteWeek)?.body ?? '';
+  syncNoteReuse();
+}
+
+function readDraft() {
+  try { return JSON.parse(localStorage.getItem(NOTE_DRAFT_KEY)); } catch { return null; }
+}
+function keepDraft() {
+  try { localStorage.setItem(NOTE_DRAFT_KEY, JSON.stringify({ week: noteWeek, body: notesText.value, at: new Date().toISOString() })); } catch { /* stockage indisponible */ }
+}
+function dropDraft(week, body) {
+  const draft = readDraft();
+  if (draft?.week !== week || draft.body !== body) return;
+  try { localStorage.removeItem(NOTE_DRAFT_KEY); } catch { /* stockage indisponible */ }
+}
+
+const noteError = (ex) => (ex instanceof TypeError
+  ? 'Hors ligne : notes gardées sur cet appareil, nouvel essai dans un instant.'
+  : /week_notes/.test(ex.message) && /404|schema cache/.test(ex.message)
+    ? 'Bloc-notes pas encore installé : exécute supabase/lot-25-bloc-notes.sql dans Supabase.'
+    : `Notes non enregistrées : ${ex.message}`);
+
+// Enregistre la saisie en attente ; la promesse renvoyée ne rejette jamais (l'erreur s'affiche sous la note).
+function saveNote({ keepalive = false } = {}) {
+  clearTimeout(noteTimer);
+  if (!noteDirty) return noteQueue;
+  const row = { week_start: noteWeek, body: notesText.value, updated_at: new Date().toISOString() };
+  noteDirty = false;
+  noteStatus('Enregistrement…');
+  noteQueue = noteQueue.then(async () => {
+    try {
+      const [saved] = await db.saveNote(row, { keepalive });
+      notes = notes.filter((n) => n.week_start !== row.week_start).concat(saved);
+      dropDraft(row.week_start, row.body);
+      if (!noteDirty) noteStatus(`Enregistré à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`);
+    } catch (ex) {
+      console.error(ex);
+      if (row.week_start === noteWeek && !noteDirty) {
+        noteDirty = true;
+        noteTimer = setTimeout(saveNote, 15000);
+      }
+      noteStatus(noteError(ex), true);
+    }
+  });
+  return noteQueue;
+}
+
+// Brouillon d'une saisie interrompue : renvoyé s'il est plus récent que la note enregistrée.
+async function restoreDraft() {
+  const draft = readDraft();
+  if (!draft?.week) return;
+  const saved = noteOf(draft.week);
+  if (!saved || (saved.body !== draft.body && new Date(draft.at) > new Date(saved.updated_at))) {
+    try {
+      const [row] = await db.saveNote({ week_start: draft.week, body: draft.body, updated_at: draft.at });
+      notes = notes.filter((n) => n.week_start !== draft.week).concat(row);
+      if (draft.week === noteWeek && !noteDirty) renderNotes();
+    } catch (ex) { console.error(ex); return; } // le brouillon reste pour la prochaine fois
+  }
+  dropDraft(draft.week, draft.body);
+}
+
+async function showNoteWeek(week) {
+  await saveNote();
+  if (noteDirty) return; // enregistrement impossible : on reste sur la semaine en cours de saisie
+  noteWeek = week;
+  noteStatus('');
+  renderNotes();
+  notesText.focus();
+}
+
+// Remplace la sélection du bloc-notes : execCommand garde l'annulation (Ctrl+Z) du navigateur, setRangeText en repli.
+function editNote(from, to, insert) {
+  notesText.setSelectionRange(from, to);
+  const done = insert ? document.execCommand('insertText', false, insert) : document.execCommand('delete');
+  if (!done) {
+    notesText.setRangeText(insert, from, to, 'end');
+    notesText.dispatchEvent(new Event('input'));
+  }
+}
+
+notesText.addEventListener('input', () => {
+  noteDirty = true;
+  keepDraft();
+  syncNoteReuse();
+  noteStatus('Modifications en cours…');
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(saveNote, 800);
+});
+
+// Entrée sur une ligne de liste : la puce continue (ou s'arrête sur une puce vide).
+notesText.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+  if (notesText.selectionStart !== notesText.selectionEnd) return;
+  const edit = continueList(notesText.value, notesText.selectionStart);
+  if (!edit) return;
+  e.preventDefault();
+  editNote(edit.from, edit.to, edit.insert);
+});
+
+notesPanel.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !notesOpen()) return;
+  e.preventDefault();
+  setNotesOpen(false);
+  $('#notes-tab').focus();
+});
+$('#notes-tab').addEventListener('click', () => setNotesOpen(!notesOpen()));
+$('#notes-close').addEventListener('click', () => { setNotesOpen(false); $('#notes-tab').focus(); });
+$('#notes-prev').addEventListener('click', () => showNoteWeek(shiftWeek(noteWeek, -1)));
+$('#notes-next').addEventListener('click', () => showNoteWeek(shiftWeek(noteWeek, 1)));
+$('#notes-today').addEventListener('click', () => showNoteWeek(weekKey(new Date())));
+$('#notes-reuse').addEventListener('click', () => {
+  editNote(0, notesText.value.length, noteOf(shiftWeek(noteWeek, -1))?.body ?? '');
+  notesText.focus();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saveNote({ keepalive: true });
+});
+
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
 const LATEST = CHANGELOG[0].version;
@@ -2886,6 +3067,9 @@ const TOURS = {
       { id: 'add', targetSelector: '#add-form', placement: 'bottom', lot: 'Lot 1',
         title: 'Ajouter une tâche',
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
+      { id: 'notes', targetSelector: '#notes-tab', placement: 'bottom', lot: 'Lot 25',
+        title: 'Bloc-notes de la semaine',
+        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine (‹ › pour revoir les précédentes).' },
       { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
         title: 'Étiquettes et réunions',
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },
@@ -3057,7 +3241,14 @@ $('#login-form').addEventListener('submit', async (e) => {
   }
 });
 
-$('#logout').addEventListener('click', () => {
+$('#logout').addEventListener('click', async () => {
+  await saveNote(); // en cas d'échec, le brouillon local est renvoyé à la prochaine connexion
+  setNotesOpen(false);
+  notes = [];
+  noteDirty = false;
+  noteWeek = weekKey(new Date());
+  notesText.value = '';
+  noteStatus('');
   saveSession(null);
   tasks = [];
   history = [];
@@ -3086,6 +3277,16 @@ async function start() {
     ]);
     render();
   });
+  // Bloc-notes chargé à part : sans sa table (SQL du Lot 25 pas encore exécuté), le reste de l'application fonctionne.
+  try {
+    notes = await db.listNotes();
+    renderNotes();
+    restoreDraft();
+  } catch (ex) {
+    console.error(ex);
+    renderNotes();
+    noteStatus(noteError(ex), true);
+  }
   if (GOOGLE_CLIENT_ID) loadGis().catch(() => { /* réessayé au clic sur « Google Agenda » */ });
   setTimeout(() => startTour('onboarding-v1'), 400); // une seule fois (état mémorisé)
 }

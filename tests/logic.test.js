@@ -1196,3 +1196,43 @@ describe('Google Agenda : plan d’import', () => {
     ]);
   });
 });
+
+describe('bloc-notes de la semaine (Lot 25)', () => {
+  test('weekKey : lundi de la semaine planifiée, en date locale ; le week-end, la semaine suivante', () => {
+    assert.equal(L.weekKey(new Date(2026, 9, 21, 23, 30)), '2026-10-19'); // mercredi soir
+    assert.equal(L.weekKey(new Date(2026, 9, 19, 0, 5)), '2026-10-19'); // lundi juste après minuit
+    assert.equal(L.weekKey(new Date(2026, 9, 24)), '2026-10-26'); // samedi
+    assert.equal(L.weekKey(new Date(2026, 9, 25)), '2026-10-26'); // dimanche
+  });
+
+  test('shiftWeek et weekOffset : semaines voisines, passage d’heure et de mois compris', () => {
+    assert.equal(L.shiftWeek('2026-10-19', 1), '2026-10-26');
+    assert.equal(L.shiftWeek('2026-10-26', 1), '2026-11-02'); // changement d'heure le 25 octobre
+    assert.equal(L.shiftWeek('2026-01-05', -1), '2025-12-29');
+    assert.equal(L.weekOffset('2026-11-02', '2026-10-19'), 2);
+    assert.equal(L.weekOffset('2026-10-12', '2026-10-19'), -1);
+    assert.equal(L.weekOffset('2026-10-19', '2026-10-19'), 0);
+  });
+
+  test('continueList : la puce continue à la ligne suivante, indentation conservée', () => {
+    const text = 'Projets\n  - Acme : maquettes';
+    assert.deepEqual(L.continueList(text, text.length), { from: text.length, to: text.length, insert: '\n  - ' });
+    assert.deepEqual(L.continueList('• a', 3), { from: 3, to: 3, insert: '\n• ' });
+  });
+
+  test('continueList : les listes numérotées s’incrémentent', () => {
+    assert.equal(L.continueList('1. Brief', 8).insert, '\n2. ');
+    assert.equal(L.continueList('9) Envoi', 8).insert, '\n10) ');
+  });
+
+  test('continueList : une puce vide est retirée (fin de liste)', () => {
+    const text = '- Acme\n- ';
+    assert.deepEqual(L.continueList(text, text.length), { from: 7, to: 9, insert: '' });
+  });
+
+  test('continueList : hors liste, retour à la ligne normal', () => {
+    assert.equal(L.continueList('Projets de la semaine', 21), null);
+    assert.equal(L.continueList('-sans espace', 12), null);
+    assert.equal(L.continueList('', 0), null);
+  });
+});
