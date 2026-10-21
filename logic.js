@@ -296,20 +296,142 @@
     return { from: caret, to: caret, insert: `\n${indent}${bullet || `${Number(num) + 1}${sep}`} ` };
   }
 
-  // ---- Suggestions de tâches par l'IA (Lot 26) ----
-  // Données envoyées à la fonction suggest-tasks : la note, les projets (en cours puis archivés) et les tâches actives.
-  function suggestionContext(note, weekStart, projects, tasks) {
-    const status = (p) => (p.status === 'en_cours' ? 'en cours' : 'archivé');
-    return {
-      week_start: weekStart,
-      note: String(note ?? '').trim(),
-      projects: [...projects].sort((a, b) => (a.status === 'en_cours' ? 0 : 1) - (b.status === 'en_cours' ? 0 : 1))
-        .map((p) => ({ id: p.id, client: p.clients?.name ?? '', name: p.name, type: p.type ?? '', status: status(p) })),
-      tasks: tasks.map((t) => ({ id: t.id, project_id: t.project_id, name: t.task_name, day: t.day_of_week || 'sas', hours: hoursOf(t), done: !!t.is_completed })),
-    };
+  // ---- Suggestions de tâches tirées du bloc-notes (Lot 26, analyse locale, sans service externe) ----
+  // Chaque ligne est rattachée à un projet par les noms de client et de projet qu'elle cite (accents et casse ignorés).
+  // Une ligne qui ne cite qu'un projet devient le contexte des lignes suivantes (jusqu'à une ligne vide).
+  // Le reste de la ligne, découpé aux virgules, donne les tâches ; le jour (« jeudi ») et la durée (« 2h »,
+  // « demi-journée ») sont repris. Une tâche active du projet au nom proche est proposée à la place d'un doublon ;
+  // un projet cité sans action propose ses tâches du sas. Les lignes barrées ou marquées comme faites sont ignorées.
+  const wordsOf = (s) => ` ${normalizeText(s).replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const ACCENTS = { a: 'aàâä', e: 'eéèêë', i: 'iîï', o: 'oôö', u: 'uùûü', c: 'cç', y: 'yÿ' };
+  // Expression qui retrouve un nom dans le texte d'origine, accents, casse et séparateurs ignorés.
+  const looseName = (name) => new RegExp(wordsOf(name).trim().split(' ').map((w) => [...w]
+    .map((ch) => (ACCENTS[ch] ? `[${ACCENTS[ch]}]` : ch)).join('')).join("[\\s\\-·'’._/]+"), 'iu');
+  const DONE_LINE = /^\s*(?:[-*•]\s*)?(?:✓|✔|\[x\]|~~)|(?:✓|✔|\(faite?\)|\bfaite?\s*)$/iu;
+  const DAY_TEXT = /\b(lundi|mardi|mercredi|jeudi|vendredi)(?:\s+(?:matin|midi|apr[eè]s-midi|soir))?\b/giu;
+  const HOURS_TEXT = /\b\d{1,2}\s*h\s*\d{2}\b|\b\d+(?:[.,]\d+)?\s*(?:h|heures?)(?![a-z])|\b(?:une\s+)?(?:demi[- ])?journ[ée]e\b/giu;
+
+  function noteHours(line) {
+    const t = normalizeText(line);
+    let m = t.match(/\b(\d{1,2})\s*h\s*(\d{2})\b/);
+    if (m) return Number(m[1]) + Number(m[2]) / 60;
+    m = t.match(/\b(\d+(?:[.,]\d+)?)\s*(?:h|heures?)(?![a-z])/);
+    if (m) return Number(m[1].replace(',', '.'));
+    if (/demi[- ]journee/.test(t)) return 4;
+    return /\bjournee\b/.test(t) ? 7 : 0;
   }
 
-  // Propositions de l'IA vérifiées contre l'état réel (projets, tâches actives) :
+  const noteDay = (line) => DAYS.find((d) => wordsOf(line).includes(` ${normalizeText(d)} `)) ?? '';
+
+  // Projet cité par une ligne : projet et client cités, sinon un projet du client cité (deviné s'il en a plusieurs
+  // en cours), sinon un projet cité seul. En cours avant archivé, nom le plus long d'abord. Un client peut être cité
+  // par un seul mot de son nom (« Bobo » pour « Boulangerie Bobo ») s'il a au moins 4 lettres et n'appartient qu'à lui.
+  // `names` : les noms tels qu'ils sont cités, retirés ensuite du texte des actions.
+  function lineProject(line, projects, tasks) {
+    const w = wordsOf(line);
+    const cites = (name) => { const n = wordsOf(name).trim(); return n.length >= 2 && w.includes(` ${n} `); };
+    const clientNames = [...new Set(projects.map((p) => p.clients?.name ?? ''))];
+    const clientCite = (name) => {
+      if (cites(name)) return name;
+      const others = clientNames.filter((n) => n !== name).map(wordsOf).join(' ');
+      return wordsOf(name).trim().split(' ').find((word) => word.length >= 4 && !others.includes(` ${word} `) && w.includes(` ${word} `)) ?? null;
+    };
+    const best = (list) => [...list].sort((a, b) => (a.status === 'en_cours' ? 0 : 1) - (b.status === 'en_cours' ? 0 : 1)
+      || b.name.length - a.name.length)[0];
+    const named = projects.filter((p) => cites(p.name));
+    const ofClient = projects.filter((p) => clientCite(p.clients?.name ?? ''));
+    const both = named.filter((p) => ofClient.includes(p));
+    if (both.length) return { project: best(both), names: [best(both).name, clientCite(best(both).clients.name)], guessed: false };
+    if (ofClient.length) {
+      const open = ofClient.filter((p) => p.status === 'en_cours');
+      const pool = open.length ? open : ofClient;
+      const busy = pool.filter((p) => tasks.some((t) => t.project_id === p.id));
+      const project = pool.length === 1 ? pool[0] : (busy[0] ?? pool[0]);
+      return { project, names: [clientCite(project.clients.name)], guessed: pool.length > 1 };
+    }
+    if (named.length) return { project: best(named), names: [best(named).name], guessed: false };
+    return null;
+  }
+
+  // Actions d'une ligne : morceaux du texte restant une fois retirés la puce et les noms cités, chacun avec le jour
+  // et la durée qu'il porte. Un morceau qui n'est qu'un jour ou une durée (« , une demi-journée ») complète l'action
+  // qui le précède.
+  function lineActions(line, names) {
+    const rest0 = line.replace(/^\s*(?:[-*•]|\d{1,3}[.)])\s+/, '');
+    // Les noms ne sont retirés qu'avant les deux-points (« Bobo : créer un logo » garde « logo »).
+    const colon = rest0.indexOf(':');
+    let head = colon >= 0 ? rest0.slice(0, colon) : rest0;
+    names.filter(Boolean).forEach((n) => { head = head.replace(looseName(n), ' '); });
+    const rest = head + (colon >= 0 ? rest0.slice(colon) : '');
+    const actions = [];
+    // Coupures : virgule (sauf « 1,5 »), point-virgule, +, tiret ou deux-points entre espaces.
+    rest.split(/\s*(?:(?<!\d),|,(?!\d)|[;+])\s*|\s+[-–—·:/|]\s+|\s*:\s+/).forEach((chunk) => {
+      const day = noteDay(chunk);
+      const hours = noteHours(chunk);
+      const name = chunk.replace(DAY_TEXT, ' ').replace(HOURS_TEXT, ' ')
+        .replace(/^[\s\-–—·:/|.,!()]+|[\s\-–—·:/|.,!()]+$/g, '').replace(/\s+/g, ' ')
+        .replace(/\s+(?:pour|chez|avec|de|du|des|à|sur|le|la|les)$/iu, ''); // « … pour Acme » une fois le nom retiré
+      if (/\p{L}{3,}/u.test(name)) actions.push({ name: name[0].toUpperCase() + name.slice(1), day, hours });
+      else if (actions.length) Object.assign(actions.at(-1), { day: actions.at(-1).day || day, hours: actions.at(-1).hours || hours });
+    });
+    return actions;
+  }
+
+  // Tâche active du projet au nom proche (identique, ou l'un contenu dans l'autre).
+  const twinTask = (tasks, projectId, name) => {
+    const n = wordsOf(name).trim();
+    return tasks.find((t) => {
+      if (t.project_id !== projectId) return false;
+      const m = wordsOf(t.task_name).trim();
+      return m === n || (Math.min(m.length, n.length) >= 4 && (m.includes(n) || n.includes(m)));
+    });
+  };
+
+  // Propositions brutes (même forme que reviewSuggestions attend) et lignes d'action sans projet reconnu.
+  function noteSuggestions(note, projects, tasks) {
+    const suggestions = [];
+    const unmatched = [];
+    let context = null; // { project, day, used, excerpt, reason }
+    const raw = (o) => ({ kind: 'new_task', project_id: '', new_client: '', new_project: '', task_id: '', task_name: '', estimated_hours: 0, day: '', note_excerpt: '', reason: '', ...o });
+    const closeContext = () => {
+      if (context && !context.used) {
+        tasks.filter((t) => t.project_id === context.project.id && !t.day_of_week && !t.is_completed).forEach((t) => suggestions.push(raw({
+          kind: 'plan_existing', project_id: t.project_id, task_id: t.id, task_name: t.task_name, day: context.day, note_excerpt: context.excerpt, reason: context.reason,
+        })));
+      }
+      context = null;
+    };
+    String(note ?? '').split('\n').forEach((rawLine) => {
+      const line = rawLine.trim();
+      if (!line) { closeContext(); return; }
+      if (DONE_LINE.test(line)) return;
+      const match = lineProject(line, projects, tasks);
+      const actions = lineActions(line, match?.names ?? []);
+      const day = actions.length ? '' : noteDay(line); // jour d'une ligne sans action : celui des tâches du sas proposées
+      const reason = match?.guessed ? `Projet deviné d’après le client ${match.project.clients.name}` : '';
+      if (match) {
+        closeContext();
+        context = { project: match.project, day, used: actions.length > 0, excerpt: line, reason };
+      } else if (context && actions.length) {
+        context.used = true;
+      } else if (actions.length) {
+        unmatched.push(line);
+        return;
+      }
+      const target = match ?? context;
+      actions.forEach((a) => {
+        const twin = twinTask(tasks, target.project.id, a.name);
+        const common = { project_id: target.project.id, day: a.day || (match ? '' : target.day), note_excerpt: line, reason: match ? reason : target.reason };
+        suggestions.push(raw(twin
+          ? { ...common, kind: 'plan_existing', task_id: twin.id, task_name: twin.task_name }
+          : { ...common, task_name: a.name, estimated_hours: a.hours }));
+      });
+    });
+    closeContext();
+    return { suggestions, unmatched };
+  }
+
+  // Propositions vérifiées contre l'état réel (projets, tâches actives) :
   //  - « new » : tâche à créer (sas par défaut, ou le jour cité) dans un projet connu ou un nouveau projet ;
   //  - « plan » : tâche existante encore dans le sas, à planifier (jour cité, sinon Lundi) ;
   //  - « planned » : tâche déjà dans le planning (affichée pour information).
@@ -669,7 +791,7 @@
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, suggestionContext, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

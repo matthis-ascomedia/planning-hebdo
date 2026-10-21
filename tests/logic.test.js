@@ -1237,7 +1237,7 @@ describe('bloc-notes de la semaine (Lot 25)', () => {
   });
 });
 
-describe('suggestions de tâches par l’IA (Lot 26)', () => {
+describe('suggestions de tâches : vérification (Lot 26)', () => {
   const projects = [
     project('p-old', 'Flyers', 'Bobo', 'termine'),
     project('p-site', 'Refonte site', 'Acme'),
@@ -1248,15 +1248,6 @@ describe('suggestions de tâches par l’IA (Lot 26)', () => {
     task({ id: 't-planned', project_id: 'p-site', task_name: 'Maquette accueil', day_of_week: 'Mardi', estimated_hours: 3 }),
   ];
   const s = (over) => ({ kind: 'new_task', project_id: '', new_client: '', new_project: '', task_id: '', task_name: '', estimated_hours: 1, day: '', note_excerpt: '', reason: '', ...over });
-
-  test('suggestionContext : projets en cours d’abord, tâches avec leur jour ou « sas »', () => {
-    const ctx = L.suggestionContext('  - Acme : maquettes  ', '2026-10-19', projects, tasks);
-    assert.equal(ctx.note, '- Acme : maquettes');
-    assert.equal(ctx.week_start, '2026-10-19');
-    assert.deepEqual(ctx.projects.map((p) => [p.id, p.status]), [['p-site', 'en cours'], ['p-logo', 'en cours'], ['p-old', 'archivé']]);
-    assert.deepEqual(ctx.projects[0], { id: 'p-site', client: 'Acme', name: 'Refonte site', type: '', status: 'en cours' });
-    assert.deepEqual(ctx.tasks.map((t) => [t.id, t.day, t.hours]), [['t-parked', 'sas', 2], ['t-planned', 'Mardi', 3]]);
-  });
 
   test('nouvelle tâche dans un projet connu : sas par défaut, heures au quart d’heure', () => {
     const [r] = L.reviewSuggestions([s({ project_id: 'p-site', task_name: 'Intégration header', estimated_hours: 1.3, note_excerpt: 'intégration' })], projects, tasks);
@@ -1361,5 +1352,72 @@ describe('tâches cochées en bas (Lot 27)', () => {
     assert.deepEqual(L.doneLast(tasks).map((x) => x.id), [2, 4, 1, 3]);
     const groups = [{ key: 'a', tasks: [{ is_completed: true }] }, { key: 'b', tasks: [{ is_completed: true }, {}] }];
     assert.deepEqual(L.doneLast(groups).map((g) => g.key), ['b', 'a']);
+  });
+});
+
+describe('suggestions de tâches : analyse locale du bloc-notes (Lot 26)', () => {
+  const projects = [
+    project('site', 'Refonte site', 'Acme'),
+    project('seo', 'SEO', 'Acme'),
+    project('logo', 'Logo', 'Boulangerie Bobo'),
+    project('fly', 'Flyers', 'Boulangerie Bobo', 'termine'),
+  ];
+  const tasks = [
+    task({ id: 't-parked', project_id: 'logo', task_name: 'Déclinaisons', day_of_week: null }),
+    task({ id: 't-planned', project_id: 'site', task_name: 'Maquette accueil', day_of_week: 'Mardi' }),
+  ];
+  const run = (note) => L.noteSuggestions(note, projects, tasks);
+  const brief = (list) => list.map((s) => [s.kind, s.project_id, s.task_id || s.task_name, s.day, s.estimated_hours]);
+
+  test('client · projet : une tâche par morceau, jour et durée attachés à leur morceau', () => {
+    const { suggestions } = run('- Acme · Refonte site : maquettes internes, devis v2 jeudi 2h');
+    assert.deepEqual(brief(suggestions), [
+      ['new_task', 'site', 'Maquettes internes', '', 0],
+      ['new_task', 'site', 'Devis v2', 'Jeudi', 2],
+    ]);
+    assert.equal(suggestions[0].note_excerpt, '- Acme · Refonte site : maquettes internes, devis v2 jeudi 2h');
+  });
+
+  test('durées : 3h30, « une demi-journée » rattachée à l’action qui précède, « 1,5 heure »', () => {
+    const { suggestions } = run('SEO : audit mots-clés mardi, une demi-journée\nRefonte site : intégration 3h30, recette 1,5 heure');
+    assert.deepEqual(brief(suggestions), [
+      ['new_task', 'seo', 'Audit mots-clés', 'Mardi', 4],
+      ['new_task', 'site', 'Intégration', '', 3.5],
+      ['new_task', 'site', 'Recette', '', 1.5],
+    ]);
+  });
+
+  test('un projet seul sert de contexte aux lignes suivantes, jusqu’à une ligne vide', () => {
+    const { suggestions, unmatched } = run('Refonte site\n- intégration header\n- maquette accueil\n\n- sans contexte');
+    assert.deepEqual(brief(suggestions), [
+      ['new_task', 'site', 'Intégration header', '', 0],
+      ['plan_existing', 'site', 't-planned', '', 0], // tâche existante au nom proche : pas de doublon
+    ]);
+    assert.deepEqual(unmatched, ['- sans contexte']);
+  });
+
+  test('projet cité sans action : ses tâches du sas sont proposées, au jour cité', () => {
+    assert.deepEqual(brief(run('- Boulangerie Bobo · Logo mercredi').suggestions), [['plan_existing', 'logo', 't-parked', 'Mercredi', 0]]);
+  });
+
+  test('client cité par un mot de son nom ; le nom d’un projet après les deux-points reste dans l’action', () => {
+    assert.deepEqual(brief(run('bobo : créer un logo pour le salon').suggestions), [['new_task', 'logo', 'Créer un logo pour le salon', '', 0]]);
+  });
+
+  test('client seul avec plusieurs projets en cours : projet deviné, signalé', () => {
+    const [s] = run('envoyer la facture à Acme').suggestions;
+    assert.deepEqual([s.project_id, s.task_name], ['site', 'Envoyer la facture']);
+    assert.match(s.reason, /deviné/);
+  });
+
+  test('lignes faites ignorées ; action sans projet reconnu listée à part', () => {
+    const { suggestions, unmatched } = run('- Acme · SEO : relance ✓\n[x] Refonte site : brief\nGlobex : kakémono salon');
+    assert.deepEqual(suggestions, []);
+    assert.deepEqual(unmatched, ['Globex : kakémono salon']);
+  });
+
+  test('les propositions passent la vérification : sas par défaut, 1 h sans durée', () => {
+    const reviewed = L.reviewSuggestions(run('Acme · Refonte site : maquettes').suggestions, projects, tasks);
+    assert.deepEqual(reviewed.map((r) => [r.kind, r.projectId, r.task_name, r.day, r.hours]), [['new', 'site', 'Maquettes', '', 1]]);
   });
 });

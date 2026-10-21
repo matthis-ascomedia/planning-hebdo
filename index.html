@@ -78,7 +78,7 @@
           <span id="notes-status" role="status" class="min-w-0 flex-1 basis-40 text-xs text-slate-500"></span>
           <button id="notes-reuse" type="button" title="Copier ici la note de la semaine précédente"
             class="hidden px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Reprendre la semaine précédente</button>
-          <button id="notes-suggest" type="button" data-lot="Lot 26" title="L’IA lit la note et propose les tâches à créer dans le sas ou à planifier"
+          <button id="notes-suggest" type="button" data-lot="Lot 26" title="Lit la note et propose les tâches à créer dans le sas ou à planifier (analyse locale, sans coût)"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-900 transition">
             <svg viewBox="0 0 16 16" aria-hidden="true" class="w-3.5 h-3.5" fill="currentColor"><path d="M8 1l1.5 3.9L13.5 6 9.5 7.6 8 11.5 6.5 7.6 2.5 6l4-1.1L8 1zm4.5 8l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z"/></svg>
             Suggérer des tâches
@@ -523,7 +523,7 @@
     </div>
   </dialog>
 
-  <!-- Suggestions de tâches tirées du bloc-notes par l'IA : à valider une par une -->
+  <!-- Suggestions de tâches tirées du bloc-notes (analyse locale) : à valider une par une -->
   <dialog id="suggest-dialog" aria-labelledby="suggest-title" data-lot="Lot 26"
     class="m-auto w-[94vw] max-w-4xl rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
     <div class="p-5 space-y-4">

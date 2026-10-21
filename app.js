@@ -8,7 +8,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, suggestionContext, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -35,11 +35,11 @@ const CHANGELOG = [
     ],
   },
   {
-    version: '1.26.0', type: 'mineure', lot: 'Lot 26', date: '2026-10-20',
+    version: '1.26.0', type: 'mineure', lot: 'Lot 26', date: '2026-10-21',
     items: [
-      'Bloc-notes : bouton « Suggérer des tâches ». L’IA lit la note et propose, projet par projet, les tâches à créer dans le sas et celles du sas à planifier.',
-      'Chaque suggestion se valide : case à cocher, nom, projet (ou nouveau projet), heures et destination (sas ou jour) modifiables. Rien n’est créé sans « Appliquer ».',
-      'Fonctionne une fois la fonction Supabase suggest-tasks déployée avec une clé Anthropic (voir supabase/functions/suggest-tasks/README.md).',
+      'Bloc-notes : bouton « Suggérer des tâches ». L’application lit la note et propose, projet par projet, les tâches à créer dans le sas et celles du sas à planifier.',
+      'Analyse faite dans le navigateur, sans service externe ni coût : une ligne cite le client et/ou le projet (« Acme · Refonte site : maquettes, devis jeudi 2h ») ; virgules, jour et durée sont reconnus. Un projet seul sur une ligne vaut pour les lignes suivantes.',
+      'Chaque suggestion se valide : case à cocher, nom, projet, heures et destination (sas ou jour) modifiables. Rien n’est créé sans « Appliquer ».',
     ],
   },
   {
@@ -3038,14 +3038,13 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') saveNote({ keepalive: true });
 });
 
-// ---------- Suggestions de tâches par l'IA (Lot 26) ----------
-// La fonction Supabase suggest-tasks lit la note avec Claude. Ses propositions sont vérifiées (reviewSuggestions)
-// puis validées une par une : nouvelles tâches (sas, ou jour choisi) et tâches du sas à planifier.
+// ---------- Suggestions de tâches tirées du bloc-notes (Lot 26) ----------
+// Analyse locale de la note (noteSuggestions, sans service externe ni coût), propositions vérifiées
+// (reviewSuggestions) puis validées une par une : nouvelles tâches (sas, ou jour choisi) et tâches du sas à planifier.
+// Une ligne d'action sans projet reconnu est proposée décochée, projet à choisir.
 const suggestDialog = $('#suggest-dialog');
 let suggItems = []; // propositions vérifiées + choix en cours (retenue, nom, projet, heures, jour)
-let suggRun = 0; // numéro de l'analyse : la réponse d'une analyse abandonnée est ignorée
 
-const SPINNER = '<span class="w-4 h-4 shrink-0 rounded-full border-2 border-slate-300 border-t-slate-900 animate-spin" aria-hidden="true"></span>';
 const SUGG_BADGE = {
   new: ['Nouvelle tâche', 'bg-emerald-50 text-emerald-700'],
   plan: ['Dans le sas', 'bg-blue-50 text-blue-700'],
@@ -3053,48 +3052,33 @@ const SUGG_BADGE = {
 };
 const SUGG_FIELD = 'px-2 py-1 text-sm rounded-md bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none';
 
-// Appel d'une fonction Supabase (Edge Function) au nom de l'utilisateur connecté.
-async function callFunction(name, body, retried = false) {
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
-  if (res.status === 401 && session && !retried) {
-    try { await refreshSession(); } catch { setAuthed(false); throw new Error('Session expirée, reconnecte-toi.'); }
-    return callFunction(name, body, true);
-  }
-  const data = await res.json().catch(() => null);
-  if (res.status === 404 && !data?.error) throw new Error(`La fonction « ${name} » n’est pas encore déployée sur Supabase : voir supabase/functions/${name}/README.md.`);
-  if (!res.ok) throw new Error(data?.error || data?.message || data?.msg || `Erreur ${res.status}`);
-  return data;
-}
-
-function suggestStatus(msg, { error = false, busy = false } = {}) {
+function suggestStatus(msg, { error = false } = {}) {
   const el = $('#suggest-status');
-  el.innerHTML = `${busy ? SPINNER : ''}<span>${esc(msg)}</span>`;
+  el.textContent = msg;
   el.classList.toggle('text-red-700', error);
   el.classList.toggle('text-slate-600', !error);
 }
 
-async function openSuggestions() {
+function openSuggestions() {
   const note = notesText.value.trim();
   if (!note) return;
   saveNote();
-  const runId = ++suggRun;
-  suggItems = [];
+  const { suggestions, unmatched } = noteSuggestions(note, projects, tasks);
+  const orphans = unmatched.flatMap((line) => {
+    // « Globex : kakémono » : ce qui précède les deux-points est le nom inconnu, pas une tâche.
+    const [head, ...tail] = line.replace(/^\s*(?:[-*•]|\d{1,3}[.)])\s+/, '').split(':');
+    const unknown = tail.length && head.trim() ? head.trim() : '';
+    return lineActions(unknown ? tail.join(':') : line, []).map((a) => ({
+      kind: 'new', taskId: '', projectId: '', newClient: '', newProject: '', task_name: a.name, hours: a.hours || 1, day: a.day, excerpt: line,
+      reason: unknown ? `« ${unknown} » ne correspond à aucun client ni projet : choisis le projet pour retenir la tâche`
+        : 'Aucun projet reconnu : choisis-le pour retenir la tâche',
+      picked: false,
+    }));
+  });
+  suggItems = reviewSuggestions(suggestions, projects, tasks).map((it) => ({ ...it, picked: it.kind !== 'planned' })).concat(orphans);
   $('#suggest-week').textContent = `D’après le bloc-notes de la ${weekTitle(noteWeek).toLowerCase()}`;
-  $('#suggest-list').classList.add('hidden');
-  $('#suggest-apply').disabled = true;
-  $('#suggest-apply').textContent = 'Appliquer';
-  suggestStatus('L’IA lit la note… (une demi-minute environ)', { busy: true });
   suggestDialog.showModal();
-  try {
-    const data = await callFunction('suggest-tasks', suggestionContext(note, noteWeek, projects, tasks));
-    if (runId !== suggRun) return;
-    suggItems = reviewSuggestions(data?.suggestions, projects, tasks).map((it) => ({ ...it, picked: it.kind !== 'planned' }));
-    renderSuggestions();
-  } catch (ex) {
-    if (runId !== suggRun) return;
-    console.error(ex);
-    suggestStatus(ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message, { error: true });
-  }
+  renderSuggestions();
 }
 
 function renderSuggestions() {
@@ -3133,7 +3117,7 @@ function renderSuggestions() {
           <span class="shrink-0 whitespace-nowrap text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
         </div>
       </li>`;
-  }).join('') || '<li class="px-3 py-3 text-sm text-slate-400">Aucune tâche à proposer : la note ne cite pas d’action reconnue.</li>';
+  }).join('') || '<li class="px-3 py-3 text-sm text-slate-400">Aucune tâche à proposer.</li>';
   $('#suggest-list').classList.remove('hidden');
   const count = (kind) => suggItems.filter((it) => it.kind === kind).length;
   const s = (n) => (n > 1 ? 's' : '');
@@ -3142,7 +3126,8 @@ function renderSuggestions() {
     count('plan') && `${count('plan')} à planifier`,
     count('planned') && `${count('planned')} déjà planifiée${s(count('planned'))}`,
   ].filter(Boolean);
-  suggestStatus(parts.length ? `${parts.join(' · ')}. Coche ce que tu retiens, ajuste si besoin, puis applique.` : '');
+  suggestStatus(parts.length ? `${parts.join(' · ')}. Coche ce que tu retiens, ajuste si besoin, puis applique.`
+    : 'Aucune tâche reconnue. Cite le client ou le projet sur la ligne (ex. « Acme · Refonte site : maquettes, devis jeudi 2h »).');
   syncSuggestApply();
 }
 
@@ -3179,7 +3164,7 @@ $('#suggest-apply').addEventListener('click', async () => {
     });
   } catch (ex) { suggestStatus(ex.message, { error: true }); return; }
   $('#suggest-apply').disabled = true;
-  suggestStatus('Enregistrement…', { busy: true });
+  suggestStatus('Enregistrement…');
   try {
     if (creations.length) {
       const rows = [];
@@ -3222,7 +3207,6 @@ const closeSuggest = () => suggestDialog.close();
 $('#suggest-close').addEventListener('click', closeSuggest);
 $('#suggest-cancel').addEventListener('click', closeSuggest);
 suggestDialog.addEventListener('click', (e) => { if (e.target === suggestDialog) closeSuggest(); });
-suggestDialog.addEventListener('close', () => { suggRun += 1; });
 
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
