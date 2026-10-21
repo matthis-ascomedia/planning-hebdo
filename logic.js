@@ -431,6 +431,70 @@
     return { suggestions, unmatched };
   }
 
+  // ---- « Copier pour Claude » (Lot 28) : la note analysée dans une conversation Claude de l'utilisateur ----
+  // Texte à coller dans Claude : consignes, projets et tâches actives repérés par des codes courts (P1, T1…),
+  // la note, et le format de réponse attendu. `refs` relie les codes aux identifiants pour relire la réponse.
+  function claudePrompt(note, weekLabel, projects, tasks) {
+    const open = projects.filter((p) => p.status === 'en_cours');
+    const archived = projects.filter((p) => p.status !== 'en_cours');
+    const list = open.concat(archived);
+    const active = tasks.filter((t) => !t.is_completed);
+    const refs = { projects: {}, tasks: {} };
+    list.forEach((p, i) => { refs.projects[`P${i + 1}`] = p.id; });
+    active.forEach((t, i) => { refs.tasks[`T${i + 1}`] = t.id; });
+    const code = (map, id) => Object.keys(map).find((k) => map[k] === id) ?? '';
+    const projectLines = list.map((p) => `${code(refs.projects, p.id)} · ${p.clients?.name ?? ''} · ${p.name}${p.status === 'en_cours' ? '' : ' (archivé)'}`);
+    const taskLines = active.map((t) => `${code(refs.tasks, t.id)} · ${code(refs.projects, t.project_id) || '?'} · ${t.task_name} · ${hoursOf(t)} h · ${t.day_of_week || 'sas'}`);
+    const text = `Aide-moi à préparer ma semaine de travail (${weekLabel}). Voici mon bloc-notes, mes projets et mes tâches en cours. Propose les tâches à créer ou à planifier.
+
+Règles :
+- Une suggestion par action concrète citée dans la note ; n'invente rien et ignore ce qui est barré ou marqué fait.
+- Rattache chaque tâche au bon projet (code P…), même si la note abrège ou ne cite que le client. Si aucun projet ne correspond, laisse "projet" vide et remplis "nouveau_client" et "nouveau_projet".
+- Si une tâche équivalente attend déjà dans le sas (jour = sas), propose "planifier" avec son code T… au lieu d'en créer une nouvelle.
+- "jour" : le jour cité par la note (Lundi à Vendredi), sinon "". "heures" : la durée citée, sinon une estimation réaliste.
+- "nom" : court, en français, sans répéter le client ni le projet. "extrait" : le passage de la note concerné.
+
+Réponds uniquement avec ce bloc JSON, sans autre texte :
+{"suggestions":[{"type":"nouvelle","projet":"P1","nouveau_client":"","nouveau_projet":"","tache":"","nom":"…","heures":1,"jour":"","extrait":"…","remarque":""}]}
+("type" vaut "nouvelle" ou "planifier" ; "tache" : le code T… à planifier, sinon "".)
+
+PROJETS (code · client · projet)
+${projectLines.join('\n') || '(aucun)'}
+
+TÂCHES EN COURS (code · projet · nom · heures · jour)
+${taskLines.join('\n') || '(aucune)'}
+
+BLOC-NOTES
+${String(note ?? '').trim()}`;
+    return { text, refs };
+  }
+
+  // Réponse collée depuis Claude : le premier objet JSON trouvé (bloc ```json toléré), traduit vers les propositions
+  // brutes de reviewSuggestions (codes P…/T… remplacés par les identifiants). Lève une erreur lisible sinon.
+  function parseClaudeReply(reply, refs) {
+    const text = String(reply ?? '');
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) throw new Error('Aucun bloc JSON dans la réponse : copie toute la réponse de Claude.');
+    let data;
+    try { data = JSON.parse(text.slice(start, end + 1)); } catch { throw new Error('Réponse illisible : copie le bloc JSON de Claude en entier.'); }
+    const list = Array.isArray(data?.suggestions) ? data.suggestions : null;
+    if (!list) throw new Error('La réponse ne contient pas de liste « suggestions ».');
+    const str = (v) => String(v ?? '').trim();
+    return list.filter((s) => s && typeof s === 'object').map((s) => ({
+      kind: /planif/i.test(str(s.type)) ? 'plan_existing' : 'new_task',
+      project_id: refs.projects[str(s.projet).toUpperCase()] ?? '',
+      new_client: str(s.nouveau_client),
+      new_project: str(s.nouveau_projet),
+      task_id: refs.tasks[str(s.tache).toUpperCase()] ?? '',
+      task_name: str(s.nom),
+      estimated_hours: Number(String(s.heures ?? '').replace(',', '.')) || 0,
+      day: DAYS.find((d) => same(d, str(s.jour))) ?? '',
+      note_excerpt: str(s.extrait),
+      reason: str(s.remarque),
+    }));
+  }
+
   // Propositions vérifiées contre l'état réel (projets, tâches actives) :
   //  - « new » : tâche à créer (sas par défaut, ou le jour cité) dans un projet connu ou un nouveau projet ;
   //  - « plan » : tâche existante encore dans le sas, à planifier (jour cité, sinon Lundi) ;
@@ -791,7 +855,7 @@
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

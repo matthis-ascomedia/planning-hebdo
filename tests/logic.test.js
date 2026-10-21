@@ -1421,3 +1421,40 @@ describe('suggestions de tâches : analyse locale du bloc-notes (Lot 26)', () =>
     assert.deepEqual(reviewed.map((r) => [r.kind, r.projectId, r.task_name, r.day, r.hours]), [['new', 'site', 'Maquettes', '', 1]]);
   });
 });
+
+describe('« Copier pour Claude » (Lot 28)', () => {
+  const projects = [project('old', 'Flyers', 'Bobo', 'termine'), project('site', 'Refonte site', 'Acme'), project('logo', 'Logo', 'Bobo')];
+  const tasks = [
+    task({ id: 't-parked', project_id: 'logo', task_name: 'Déclinaisons', day_of_week: null, estimated_hours: 2 }),
+    task({ id: 't-done', project_id: 'site', task_name: 'Brief', is_completed: true }),
+  ];
+
+  test('claudePrompt : projets en cours puis archivés, tâches à faire, note et format de réponse', () => {
+    const { text, refs } = L.claudePrompt('  - Bobo : déclinaisons mardi ', 'semaine du 19 octobre', projects, tasks);
+    assert.deepEqual(refs, { projects: { P1: 'site', P2: 'logo', P3: 'old' }, tasks: { T1: 't-parked' } });
+    assert.match(text, /semaine du 19 octobre/);
+    assert.match(text, /P1 · Acme · Refonte site\nP2 · Bobo · Logo\nP3 · Bobo · Flyers \(archivé\)/);
+    assert.match(text, /T1 · P2 · Déclinaisons · 2 h · sas/);
+    assert.doesNotMatch(text, /Brief/); // tâche terminée non envoyée
+    assert.match(text, /BLOC-NOTES\n- Bobo : déclinaisons mardi$/);
+    assert.match(text, /"suggestions"/);
+  });
+
+  test('parseClaudeReply : bloc ```json toléré, codes traduits, jour et heures normalisés', () => {
+    const { refs } = L.claudePrompt('x', '', projects, tasks);
+    const reply = 'Voici :\n```json\n{"suggestions":[{"type":"planifier","projet":"p2","tache":"T1","nom":"Déclinaisons","heures":"","jour":"mardi","extrait":"déclinaisons mardi","remarque":""},'
+      + '{"type":"nouvelle","projet":"","nouveau_client":"Globex","nouveau_projet":"Salon","tache":"","nom":"Kakémono","heures":"1,5","jour":"","extrait":"kakémono"}]}\n```';
+    const raw = L.parseClaudeReply(reply, refs);
+    assert.deepEqual(raw.map((r) => [r.kind, r.project_id, r.task_id, r.task_name, r.estimated_hours, r.day]), [
+      ['plan_existing', 'logo', 't-parked', 'Déclinaisons', 0, 'Mardi'],
+      ['new_task', '', '', 'Kakémono', 1.5, ''],
+    ]);
+    assert.deepEqual(L.reviewSuggestions(raw, projects, tasks).map((r) => [r.kind, r.newProject || r.taskId]), [['plan', 't-parked'], ['new', 'Salon']]);
+  });
+
+  test('parseClaudeReply : messages clairs si la réponse est incomplète', () => {
+    assert.throws(() => L.parseClaudeReply('Bonjour !', { projects: {}, tasks: {} }), /Aucun bloc JSON/);
+    assert.throws(() => L.parseClaudeReply('{"suggestions": [', { projects: {}, tasks: {} }), /Aucun bloc JSON|illisible/);
+    assert.throws(() => L.parseClaudeReply('{"autre": 1}', { projects: {}, tasks: {} }), /suggestions/);
+  });
+});

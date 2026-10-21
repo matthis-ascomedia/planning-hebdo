@@ -8,7 +8,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -27,6 +27,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.28.0', type: 'mineure', lot: 'Lot 28', date: '2026-10-21',
+    items: [
+      'Bloc-notes : bouton « Copier pour Claude ». La note, tes projets et tes tâches sont copiés avec les consignes, à coller dans ta conversation Claude (abonnement, sans coût supplémentaire).',
+      'La réponse de Claude, recollée dans la fenêtre, s’affiche dans les suggestions habituelles : tu valides chaque tâche avant de l’ajouter.',
+      'Le lien de ta conversation Claude dédiée se modifie dans la fenêtre et reste mémorisé sur l’appareil.',
+    ],
+  },
   {
     version: '1.27.0', type: 'mineure', lot: 'Lot 27', date: '2026-10-20',
     items: [
@@ -2910,6 +2918,7 @@ function syncNoteActions() {
   const previous = noteOf(shiftWeek(noteWeek, -1))?.body ?? '';
   $('#notes-reuse').classList.toggle('hidden', !empty || !previous.trim());
   $('#notes-suggest').disabled = empty;
+  $('#notes-claude').disabled = empty;
 }
 
 const weekTitle = (week) => `Semaine du ${new Date(`${week}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}`;
@@ -3075,7 +3084,12 @@ function openSuggestions() {
       picked: false,
     }));
   });
-  suggItems = reviewSuggestions(suggestions, projects, tasks).map((it) => ({ ...it, picked: it.kind !== 'planned' })).concat(orphans);
+  showSuggestions(suggestions, orphans);
+}
+
+// Propositions brutes (analyse locale ou réponse de Claude) vérifiées puis affichées pour validation.
+function showSuggestions(raw, extra = []) {
+  suggItems = reviewSuggestions(raw, projects, tasks).map((it) => ({ ...it, picked: it.kind !== 'planned' })).concat(extra);
   $('#suggest-week').textContent = `D’après le bloc-notes de la ${weekTitle(noteWeek).toLowerCase()}`;
   suggestDialog.showModal();
   renderSuggestions();
@@ -3208,6 +3222,85 @@ $('#suggest-close').addEventListener('click', closeSuggest);
 $('#suggest-cancel').addEventListener('click', closeSuggest);
 suggestDialog.addEventListener('click', (e) => { if (e.target === suggestDialog) closeSuggest(); });
 
+// ---------- Copier pour Claude (Lot 28) ----------
+// La note, les projets et les tâches sont copiés avec des consignes ; l'utilisateur les colle dans sa conversation
+// Claude (abonnement, sans API), puis recolle la réponse JSON, affichée dans la fenêtre des suggestions.
+const CLAUDE_URL_KEY = 'planning_claude_url';
+const CLAUDE_DEFAULT_URL = 'https://claude.ai/new';
+const claudeDialog = $('#claude-dialog');
+let claudeRefs = null; // codes P…/T… du dernier texte copié
+
+function claudeUrl() {
+  try { return localStorage.getItem(CLAUDE_URL_KEY) || CLAUDE_DEFAULT_URL; } catch { return CLAUDE_DEFAULT_URL; }
+}
+
+async function copyForClaude() {
+  const note = notesText.value.trim();
+  if (!note) return;
+  saveNote();
+  const { text, refs } = claudePrompt(note, weekTitle(noteWeek).toLowerCase(), projects, tasks);
+  claudeRefs = refs;
+  let copied = true;
+  try { await navigator.clipboard.writeText(text); } catch { copied = false; }
+  const status = $('#claude-copied');
+  status.textContent = copied ? '✓ Texte copié dans le presse-papiers.' : 'Copie automatique impossible : utilise « Recopier le texte ».';
+  status.classList.toggle('text-red-700', !copied);
+  status.classList.toggle('text-slate-500', copied);
+  return text;
+}
+
+async function openClaude() {
+  if (!notesText.value.trim()) return;
+  $('#claude-url').value = claudeUrl();
+  $('#claude-open').href = claudeUrl();
+  $('#claude-reply').value = '';
+  $('#claude-error').classList.add('hidden');
+  claudeDialog.showModal();
+  await copyForClaude();
+}
+
+// Lien de la conversation : validé et mémorisé à chaque saisie ; « Ouvrir » suit le dernier lien valide.
+$('#claude-url').addEventListener('input', (e) => {
+  let url = '';
+  try { url = normalizeUrl(e.target.value); } catch { /* lien incomplet pendant la saisie */ }
+  $('#claude-open').href = url || CLAUDE_DEFAULT_URL;
+  try {
+    if (url) localStorage.setItem(CLAUDE_URL_KEY, url);
+    else if (!e.target.value.trim()) localStorage.removeItem(CLAUDE_URL_KEY);
+  } catch { /* stockage indisponible */ }
+});
+
+// Repli si le presse-papiers est refusé : le texte est sélectionné dans la zone de réponse pour Ctrl+C.
+$('#claude-copy').addEventListener('click', async () => {
+  const text = await copyForClaude();
+  if (text && $('#claude-copied').classList.contains('text-red-700')) {
+    const area = $('#claude-reply');
+    area.value = text;
+    area.select();
+    $('#claude-copied').textContent = 'Texte sélectionné ci-dessous : copie-le (Ctrl+C ou ⌘C), puis remplace-le par la réponse de Claude.';
+  }
+});
+
+$('#claude-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const err = $('#claude-error');
+  err.classList.add('hidden');
+  try {
+    const refs = claudeRefs ?? claudePrompt(notesText.value, '', projects, tasks).refs;
+    const raw = parseClaudeReply($('#claude-reply').value, refs);
+    claudeDialog.close();
+    showSuggestions(raw);
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.classList.remove('hidden');
+  }
+});
+
+$('#notes-claude').addEventListener('click', openClaude);
+$('#claude-close').addEventListener('click', () => claudeDialog.close());
+$('#claude-cancel').addEventListener('click', () => claudeDialog.close());
+claudeDialog.addEventListener('click', (e) => { if (e.target === claudeDialog) claudeDialog.close(); });
+
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
 const LATEST = CHANGELOG[0].version;
@@ -3258,7 +3351,7 @@ const TOURS = {
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
       { id: 'notes', targetSelector: '#notes-tab', placement: 'bottom', lot: 'Lot 25',
         title: 'Bloc-notes de la semaine',
-        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une.' },
+        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une ; « Copier pour Claude » fait analyser la note dans ta conversation Claude.' },
       { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
         title: 'Étiquettes et réunions',
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },
