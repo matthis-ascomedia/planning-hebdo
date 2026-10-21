@@ -28,6 +28,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
   {
+    version: '1.28.1', type: 'patch', lot: 'Lot 28', date: '2026-10-21',
+    items: [
+      'Copier pour Claude : si la copie automatique est refusée, le texte s’affiche à part, déjà sélectionné ; la zone « Réponse de Claude » reste libre.',
+      'Copier pour Claude : la réponse se relit correctement même après un rechargement de la page.',
+      'Suggestions : les liens collés dans la note ne deviennent plus des tâches, et « 2 hôtels » n’est plus lu comme une durée.',
+    ],
+  },
+  {
     version: '1.28.0', type: 'mineure', lot: 'Lot 28', date: '2026-10-21',
     items: [
       'Bloc-notes : bouton « Copier pour Claude ». La note, tes projets et tes tâches sont copiés avec les consignes, à coller dans ta conversation Claude (abonnement, sans coût supplémentaire).',
@@ -3226,12 +3234,17 @@ suggestDialog.addEventListener('click', (e) => { if (e.target === suggestDialog)
 // La note, les projets et les tâches sont copiés avec des consignes ; l'utilisateur les colle dans sa conversation
 // Claude (abonnement, sans API), puis recolle la réponse JSON, affichée dans la fenêtre des suggestions.
 const CLAUDE_URL_KEY = 'planning_claude_url';
+const CLAUDE_REFS_KEY = 'planning_claude_refs'; // codes P…/T… du dernier texte copié : gardés si la page est rechargée
 const CLAUDE_DEFAULT_URL = 'https://claude.ai/new';
 const claudeDialog = $('#claude-dialog');
-let claudeRefs = null; // codes P…/T… du dernier texte copié
+let claudeRefs = null;
 
 function claudeUrl() {
   try { return localStorage.getItem(CLAUDE_URL_KEY) || CLAUDE_DEFAULT_URL; } catch { return CLAUDE_DEFAULT_URL; }
+}
+
+function storedClaudeRefs() {
+  try { return JSON.parse(localStorage.getItem(CLAUDE_REFS_KEY)); } catch { return null; }
 }
 
 async function copyForClaude() {
@@ -3240,13 +3253,17 @@ async function copyForClaude() {
   saveNote();
   const { text, refs } = claudePrompt(note, weekTitle(noteWeek).toLowerCase(), projects, tasks);
   claudeRefs = refs;
+  try { localStorage.setItem(CLAUDE_REFS_KEY, JSON.stringify(refs)); } catch { /* stockage indisponible */ }
   let copied = true;
   try { await navigator.clipboard.writeText(text); } catch { copied = false; }
+  // Presse-papiers refusé : le texte est affiché à part, sélectionné, pour une copie manuelle.
+  $('#claude-manual').classList.toggle('hidden', copied);
+  $('#claude-prompt').value = copied ? '' : text;
+  if (!copied) $('#claude-prompt').select();
   const status = $('#claude-copied');
-  status.textContent = copied ? '✓ Texte copié dans le presse-papiers.' : 'Copie automatique impossible : utilise « Recopier le texte ».';
+  status.textContent = copied ? '✓ Texte copié dans le presse-papiers.' : 'Copie automatique impossible : copie le texte surligné ci-dessous.';
   status.classList.toggle('text-red-700', !copied);
   status.classList.toggle('text-slate-500', copied);
-  return text;
 }
 
 async function openClaude() {
@@ -3270,23 +3287,15 @@ $('#claude-url').addEventListener('input', (e) => {
   } catch { /* stockage indisponible */ }
 });
 
-// Repli si le presse-papiers est refusé : le texte est sélectionné dans la zone de réponse pour Ctrl+C.
-$('#claude-copy').addEventListener('click', async () => {
-  const text = await copyForClaude();
-  if (text && $('#claude-copied').classList.contains('text-red-700')) {
-    const area = $('#claude-reply');
-    area.value = text;
-    area.select();
-    $('#claude-copied').textContent = 'Texte sélectionné ci-dessous : copie-le (Ctrl+C ou ⌘C), puis remplace-le par la réponse de Claude.';
-  }
-});
+$('#claude-copy').addEventListener('click', copyForClaude);
 
 $('#claude-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const err = $('#claude-error');
   err.classList.add('hidden');
   try {
-    const refs = claudeRefs ?? claudePrompt(notesText.value, '', projects, tasks).refs;
+    const refs = claudeRefs ?? storedClaudeRefs();
+    if (!refs) throw new Error('Clique d’abord sur « Recopier le texte » et envoie-le à Claude : sa réponse s’appuie sur ce texte.');
     const raw = parseClaudeReply($('#claude-reply').value, refs);
     claudeDialog.close();
     showSuggestions(raw);
@@ -3531,6 +3540,8 @@ $('#logout').addEventListener('click', async () => {
   noteWeek = weekKey(new Date());
   notesText.value = '';
   noteStatus('');
+  claudeRefs = null;
+  try { localStorage.removeItem(CLAUDE_REFS_KEY); } catch { /* stockage indisponible */ }
   saveSession(null);
   tasks = [];
   history = [];

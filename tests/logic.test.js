@@ -1458,3 +1458,15 @@ describe('« Copier pour Claude » (Lot 28)', () => {
     assert.throws(() => L.parseClaudeReply('{"autre": 1}', { projects: {}, tasks: {} }), /suggestions/);
   });
 });
+
+describe('recette lots 25-28', () => {
+  const projects = [project('site', 'Refonte site', 'Acme')];
+  test('analyse locale : les liens de la note ne deviennent pas des tâches', () => {
+    const { suggestions } = L.noteSuggestions('Acme · Refonte site : maquettes https://figma.com/file/abc, recette', projects, []);
+    assert.deepEqual(suggestions.map((s) => s.task_name), ['Maquettes', 'Recette']);
+  });
+  test('analyse locale : « 2 hôtels » n’est pas une durée', () => {
+    const [s] = L.noteSuggestions('Acme · Refonte site : comparer 2 hôtels', projects, []).suggestions;
+    assert.deepEqual([s.task_name, s.estimated_hours], ['Comparer 2 hôtels', 0]);
+  });
+});
