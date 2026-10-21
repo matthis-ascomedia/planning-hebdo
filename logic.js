@@ -309,7 +309,7 @@
     .map((ch) => (ACCENTS[ch] ? `[${ACCENTS[ch]}]` : ch)).join('')).join("[\\s\\-·'’._/]+"), 'iu');
   const DONE_LINE = /^\s*(?:[-*•]\s*)?(?:✓|✔|\[x\]|~~)|(?:✓|✔|\(faite?\)|\bfaite?\s*)$/iu;
   const DAY_TEXT = /\b(lundi|mardi|mercredi|jeudi|vendredi)(?:\s+(?:matin|midi|apr[eè]s-midi|soir))?\b/giu;
-  const HOURS_TEXT = /\b\d{1,2}\s*h\s*\d{2}\b|\b\d+(?:[.,]\d+)?\s*(?:h|heures?)(?![a-z])|\b(?:une\s+)?(?:demi[- ])?journ[ée]e\b/giu;
+  const HOURS_TEXT = /\b\d{1,2}\s*h\s*\d{2}\b|\b\d+(?:[.,]\d+)?\s*(?:h|heures?)(?!\p{L})|\b(?:une\s+)?(?:demi[- ])?journ[ée]e\b/giu;
 
   function noteHours(line) {
     const t = normalizeText(line);
@@ -357,7 +357,7 @@
   // et la durée qu'il porte. Un morceau qui n'est qu'un jour ou une durée (« , une demi-journée ») complète l'action
   // qui le précède.
   function lineActions(line, names) {
-    const rest0 = line.replace(/^\s*(?:[-*•]|\d{1,3}[.)])\s+/, '');
+    const rest0 = line.replace(/^\s*(?:[-*•]|\d{1,3}[.)])\s+/, '').replace(/https?:\/\/[^\s,;]+/gi, ' '); // liens ignorés (la virgule qui suit reste un séparateur)
     // Les noms ne sont retirés qu'avant les deux-points (« Bobo : créer un logo » garde « logo »).
     const colon = rest0.indexOf(':');
     let head = colon >= 0 ? rest0.slice(0, colon) : rest0;
