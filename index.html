@@ -49,6 +49,46 @@
 
   <div id="app" class="hidden max-w-[1400px] 2xl:max-w-[1700px] mx-auto px-4 sm:px-8 py-6 sm:py-8">
 
+    <!-- Bloc-notes de la semaine : volet gauche masqué par défaut, déplié par la pastille du bord gauche -->
+    <aside id="notes-panel" data-lot="Lot 25" aria-label="Bloc-notes de la semaine"
+      class="fixed inset-y-0 left-0 z-40 w-[min(28rem,calc(100vw-2.75rem))] -translate-x-full transition-transform duration-200 ease-out">
+      <button id="notes-tab" type="button" aria-controls="notes-body" aria-expanded="false" title="Bloc-notes de la semaine"
+        class="absolute left-full top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 rounded-r-xl bg-slate-900 px-1.5 py-3 text-white shadow-lg hover:bg-slate-700 transition">
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5"/><path d="M5.5 5h5M5.5 8h5M5.5 11h3"/></svg>
+        <span class="text-xs font-medium [writing-mode:vertical-rl] rotate-180">Bloc-notes</span>
+      </button>
+      <div id="notes-body" inert class="h-full flex flex-col bg-white border-r border-slate-200 shadow-xl">
+        <div class="flex items-start gap-2 px-4 pt-4 pb-3 border-b border-slate-100">
+          <div class="min-w-0 flex-1">
+            <h2 class="text-base font-semibold tracking-tight">Bloc-notes</h2>
+            <p class="text-xs text-slate-500"><span id="notes-week"></span>
+              <button id="notes-today" type="button" class="hidden ml-1 font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900">Revenir à cette semaine</button></p>
+          </div>
+          <button id="notes-prev" type="button" title="Semaine précédente" aria-label="Semaine précédente"
+            class="w-7 h-7 inline-flex items-center justify-center rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition">‹</button>
+          <button id="notes-next" type="button" title="Semaine suivante" aria-label="Semaine suivante"
+            class="w-7 h-7 inline-flex items-center justify-center rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition">›</button>
+          <button id="notes-close" type="button" title="Replier le bloc-notes" aria-label="Replier le bloc-notes"
+            class="w-7 h-7 inline-flex items-center justify-center rounded-md text-xl leading-none text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition">×</button>
+        </div>
+        <textarea id="notes-text" lang="fr" spellcheck="true" maxlength="20000" aria-label="Notes de la semaine"
+          placeholder="Les projets prévus cette semaine, avant de les placer dans le planning…&#10;&#10;- Acme · Refonte site : maquettes, intégration&#10;- Bobo · Logo : déclinaisons"
+          class="min-h-0 flex-1 w-full resize-none px-4 py-3 text-sm leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none"></textarea>
+        <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-slate-100">
+          <span id="notes-status" role="status" class="basis-full text-xs text-slate-500 empty:hidden"></span>
+          <button id="notes-reuse" type="button" title="Copier ici la note de la semaine précédente"
+            class="hidden mr-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Reprendre la semaine précédente</button>
+          <button id="notes-claude" type="button" data-lot="Lot 28" title="Copier la note et tes projets pour les analyser dans ta conversation Claude (compris dans l’abonnement)"
+            class="flex-1 sm:flex-none sm:ml-auto whitespace-nowrap px-2.5 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white transition">Copier pour Claude</button>
+          <button id="notes-suggest" type="button" data-lot="Lot 26" title="Lit la note et propose les tâches à créer dans le sas ou à planifier (analyse locale, sans coût)"
+            class="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-900 transition">
+            <svg viewBox="0 0 16 16" aria-hidden="true" class="w-3.5 h-3.5" fill="currentColor"><path d="M8 1l1.5 3.9L13.5 6 9.5 7.6 8 11.5 6.5 7.6 2.5 6l4-1.1L8 1zm4.5 8l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z"/></svg>
+            Suggérer des tâches
+          </button>
+        </div>
+      </div>
+    </aside>
+
     <header class="flex flex-wrap items-center justify-between gap-4 mb-6">
       <div>
         <h1 class="text-xl font-semibold tracking-tight">Planning hebdomadaire</h1>
@@ -485,6 +525,70 @@
     </div>
   </dialog>
 
+  <!-- Suggestions de tâches tirées du bloc-notes (analyse locale) : à valider une par une -->
+  <dialog id="suggest-dialog" aria-labelledby="suggest-title" data-lot="Lot 26"
+    class="m-auto w-[94vw] max-w-4xl rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <div class="p-5 space-y-4">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h2 id="suggest-title" class="text-base font-semibold tracking-tight">Suggestions de tâches</h2>
+          <p id="suggest-week" class="text-sm text-slate-500"></p>
+        </div>
+        <button type="button" id="suggest-close" class="text-slate-400 hover:text-slate-900 text-xl leading-none" aria-label="Fermer">×</button>
+      </div>
+      <p id="suggest-status" role="status" class="flex items-center gap-2 text-sm text-slate-600"></p>
+      <ul id="suggest-list" class="hidden max-h-[60vh] overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100"></ul>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <p class="mr-auto text-xs text-slate-500">Rien n’est créé sans validation. Les nouvelles tâches vont dans le sas, sauf si tu choisis un jour.</p>
+        <button type="button" id="suggest-cancel" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+        <button type="button" id="suggest-apply" disabled
+          class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-900 transition">Appliquer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Copier pour Claude : la note analysée dans une conversation Claude, réponse recollée ici -->
+  <dialog id="claude-dialog" aria-labelledby="claude-title" data-lot="Lot 28"
+    class="m-auto w-[94vw] max-w-2xl rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
+    <form id="claude-form" class="p-5 space-y-4">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h2 id="claude-title" class="text-base font-semibold tracking-tight">Préparer la semaine avec Claude</h2>
+          <p id="claude-copied" role="status" class="text-sm text-slate-500"></p>
+        </div>
+        <button type="button" id="claude-close" class="text-slate-400 hover:text-slate-900 text-xl leading-none" aria-label="Fermer">×</button>
+      </div>
+      <ol class="list-decimal pl-5 space-y-1 text-sm text-slate-700">
+        <li>Ta note, tes projets et tes tâches sont copiés, avec les consignes pour Claude.</li>
+        <li>Ouvre ta conversation Claude, colle (Ctrl+V ou ⌘V) et envoie.</li>
+        <li>Copie la réponse de Claude (le bloc de code, bouton « Copier ») et colle-la ci-dessous.</li>
+        <li>« Voir les suggestions » : tu valides chaque tâche avant de l’ajouter.</li>
+      </ol>
+      <p class="text-xs text-slate-500">Utilise ton abonnement Claude, sans coût supplémentaire.</p>
+      <div class="space-y-1">
+        <label for="claude-url" class="block text-xs text-slate-500">Conversation Claude dédiée (mémorisée sur cet appareil)</label>
+        <div class="flex gap-2">
+          <input id="claude-url" name="claude_url" autocomplete="off" placeholder="https://claude.ai/new"
+            class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+          <a id="claude-open" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer"
+            class="shrink-0 px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Ouvrir ↗</a>
+        </div>
+        <p class="text-xs text-slate-400">Astuce : crée une conversation ou un projet Claude « Planning », puis colle son adresse ici.</p>
+      </div>
+      <div class="space-y-1">
+        <label for="claude-reply" class="block text-xs text-slate-500">Réponse de Claude</label>
+        <textarea id="claude-reply" name="reply" rows="5" placeholder='{"suggestions": [ … ] }'
+          class="w-full resize-y px-3 py-2 text-xs font-mono rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none"></textarea>
+      </div>
+      <p id="claude-error" class="hidden text-sm text-red-700"></p>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" id="claude-copy" class="mr-auto px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Recopier le texte</button>
+        <button type="button" id="claude-cancel" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+        <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Voir les suggestions</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Duplication d'une tâche : choix de la destination -->
   <dialog id="duplicate-dialog" aria-labelledby="duplicate-title" data-lot="Lot 16"
     class="m-auto w-[92vw] max-w-xs rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
@@ -582,7 +686,7 @@
   </div>
 
   <div id="toast" role="status" aria-live="polite"
-    class="fixed bottom-6 left-1/2 -translate-x-1/2 translate-y-4 opacity-0 pointer-events-none transition-all duration-300 flex items-center gap-3 text-sm font-medium text-white bg-slate-900 rounded-lg px-4 py-2.5 shadow-lg max-w-[90vw]"></div>
+    class="fixed z-[70] bottom-6 left-1/2 -translate-x-1/2 translate-y-4 opacity-0 pointer-events-none transition-all duration-300 flex items-center gap-3 text-sm font-medium text-white bg-slate-900 rounded-lg px-4 py-2.5 shadow-lg max-w-[90vw]"></div>
 
   <script src="version.js"></script>
   <script src="logic.js"></script>

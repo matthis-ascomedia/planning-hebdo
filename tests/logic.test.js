@@ -723,6 +723,20 @@ describe('weekSnapshot', () => {
     const t = task({ is_completed: true, client_name: 'Ancien nom', projects: { clients: { name: 'Nouveau nom' } } });
     assert.equal(L.weekSnapshot([t]).by_client[0].client, 'Nouveau nom');
   });
+
+  test('les terminées comptent leur temps passé, les reportées leurs heures prévues', () => {
+    const list = [
+      task({ id: 'a', is_completed: true, estimated_hours: 2, actual_hours: 3.5, client_name: 'Acme' }),
+      task({ id: 'b', is_completed: true, estimated_hours: 1, actual_hours: null, client_name: 'Acme' }),
+      task({ id: 'c', is_completed: false, estimated_hours: 4, actual_hours: 1, day_of_week: 'Jeudi', client_name: 'Acme' }),
+    ];
+    const at = '2026-10-19T10:00:00.000Z';
+    const consigned = [task({ id: 'k', is_completed: true, estimated_hours: 2, actual_hours: 0, client_name: 'Beta', consigned_at: at, archived_at: at })];
+    const s = L.weekSnapshot(list, [], consigned);
+    assert.equal(s.finished_hours, 4.5);
+    assert.equal(s.carried_hours, 4);
+    assert.deepEqual(s.by_client.map((c) => [c.client, c.hours]), [['Acme', 4.5], ['Beta', 0]]);
+  });
 });
 
 describe('weekPeriods', () => {
@@ -1180,5 +1194,267 @@ describe('Google Agenda : plan d’import', () => {
     assert.deepEqual(L.importPlan(items, tasks, history, labels).map((i) => [i.event.id, i.status, i.taskId ?? null]), [
       ['e1', 'complete', 'x'], ['old', 'imported', null], ['e3', 'exists', 'y'], ['e4', 'new', null],
     ]);
+  });
+});
+
+describe('bloc-notes de la semaine (Lot 25)', () => {
+  test('weekKey : lundi de la semaine planifiée, en date locale ; le week-end, la semaine suivante', () => {
+    assert.equal(L.weekKey(new Date(2026, 9, 21, 23, 30)), '2026-10-19'); // mercredi soir
+    assert.equal(L.weekKey(new Date(2026, 9, 19, 0, 5)), '2026-10-19'); // lundi juste après minuit
+    assert.equal(L.weekKey(new Date(2026, 9, 24)), '2026-10-26'); // samedi
+    assert.equal(L.weekKey(new Date(2026, 9, 25)), '2026-10-26'); // dimanche
+  });
+
+  test('shiftWeek et weekOffset : semaines voisines, passage d’heure et de mois compris', () => {
+    assert.equal(L.shiftWeek('2026-10-19', 1), '2026-10-26');
+    assert.equal(L.shiftWeek('2026-10-26', 1), '2026-11-02'); // changement d'heure le 25 octobre
+    assert.equal(L.shiftWeek('2026-01-05', -1), '2025-12-29');
+    assert.equal(L.weekOffset('2026-11-02', '2026-10-19'), 2);
+    assert.equal(L.weekOffset('2026-10-12', '2026-10-19'), -1);
+    assert.equal(L.weekOffset('2026-10-19', '2026-10-19'), 0);
+  });
+
+  test('continueList : la puce continue à la ligne suivante, indentation conservée', () => {
+    const text = 'Projets\n  - Acme : maquettes';
+    assert.deepEqual(L.continueList(text, text.length), { from: text.length, to: text.length, insert: '\n  - ' });
+    assert.deepEqual(L.continueList('• a', 3), { from: 3, to: 3, insert: '\n• ' });
+  });
+
+  test('continueList : les listes numérotées s’incrémentent', () => {
+    assert.equal(L.continueList('1. Brief', 8).insert, '\n2. ');
+    assert.equal(L.continueList('9) Envoi', 8).insert, '\n10) ');
+  });
+
+  test('continueList : une puce vide est retirée (fin de liste)', () => {
+    const text = '- Acme\n- ';
+    assert.deepEqual(L.continueList(text, text.length), { from: 7, to: 9, insert: '' });
+  });
+
+  test('continueList : hors liste, retour à la ligne normal', () => {
+    assert.equal(L.continueList('Projets de la semaine', 21), null);
+    assert.equal(L.continueList('-sans espace', 12), null);
+    assert.equal(L.continueList('', 0), null);
+  });
+});
+
+describe('suggestions de tâches : vérification (Lot 26)', () => {
+  const projects = [
+    project('p-old', 'Flyers', 'Bobo', 'termine'),
+    project('p-site', 'Refonte site', 'Acme'),
+    project('p-logo', 'Logo', 'Bobo'),
+  ];
+  const tasks = [
+    task({ id: 't-parked', project_id: 'p-logo', task_name: 'Déclinaisons', day_of_week: null, estimated_hours: 2 }),
+    task({ id: 't-planned', project_id: 'p-site', task_name: 'Maquette accueil', day_of_week: 'Mardi', estimated_hours: 3 }),
+  ];
+  const s = (over) => ({ kind: 'new_task', project_id: '', new_client: '', new_project: '', task_id: '', task_name: '', estimated_hours: 1, day: '', note_excerpt: '', reason: '', ...over });
+
+  test('nouvelle tâche dans un projet connu : sas par défaut, heures au quart d’heure', () => {
+    const [r] = L.reviewSuggestions([s({ project_id: 'p-site', task_name: 'Intégration header', estimated_hours: 1.3, note_excerpt: 'intégration' })], projects, tasks);
+    assert.equal(r.kind, 'new');
+    assert.equal(r.projectId, 'p-site');
+    assert.equal(r.day, '');
+    assert.equal(r.hours, 1.25);
+    assert.equal(r.excerpt, 'intégration');
+  });
+
+  test('jour cité gardé, jour inconnu ignoré, heures absentes : 1 h', () => {
+    const [a, b] = L.reviewSuggestions([
+      s({ project_id: 'p-site', task_name: 'A', day: 'Jeudi', estimated_hours: 0 }),
+      s({ project_id: 'p-site', task_name: 'B', day: 'Samedi' }),
+    ], projects, tasks);
+    assert.equal(a.day, 'Jeudi');
+    assert.equal(a.hours, 1);
+    assert.equal(b.day, '');
+  });
+
+  test('tâche du sas : à planifier (jour cité, sinon Lundi) ; déjà planifiée : pour information', () => {
+    const [plan, planned] = L.reviewSuggestions([
+      s({ kind: 'plan_existing', task_id: 't-parked', project_id: 'p-logo', task_name: 'Déclinaisons' }),
+      s({ kind: 'plan_existing', task_id: 't-planned', day: 'Jeudi' }),
+    ], projects, tasks);
+    assert.deepEqual([plan.kind, plan.taskId, plan.day, plan.hours], ['plan', 't-parked', 'Lundi', 2]);
+    assert.deepEqual([planned.kind, planned.day], ['planned', 'Mardi']);
+  });
+
+  test('une « nouvelle » tâche qui existe déjà dans le projet devient la tâche existante', () => {
+    const [r] = L.reviewSuggestions([s({ project_id: 'p-logo', task_name: 'déclinaisons ', day: 'Mercredi' })], projects, tasks);
+    assert.deepEqual([r.kind, r.taskId, r.day], ['plan', 't-parked', 'Mercredi']);
+  });
+
+  test('projet inconnu : nouveau projet si nommé, sinon écarté ; doublons et noms vides écartés', () => {
+    const list = L.reviewSuggestions([
+      s({ new_client: 'Globex', new_project: 'Salon', task_name: 'Kakémono' }),
+      s({ new_client: 'globex', new_project: 'salon', task_name: 'kakémono' }),
+      s({ project_id: 'inconnu', task_name: 'Sans projet' }),
+      s({ project_id: 'p-site', task_name: '  ' }),
+      s({ kind: 'plan_existing', task_id: 't-parked' }),
+      s({ kind: 'plan_existing', task_id: 't-parked' }),
+    ], projects, tasks);
+    assert.deepEqual(list.map((r) => [r.kind, r.newClient ?? '', r.newProject ?? '', r.task_name]),
+      [['new', 'Globex', 'Salon', 'Kakémono'], ['plan', '', '', 'Déclinaisons']]);
+  });
+
+  test('projet connu : les champs « nouveau projet » sont ignorés ; réponse invalide : aucune suggestion', () => {
+    const [r] = L.reviewSuggestions([s({ project_id: 'p-old', new_client: 'X', new_project: 'Y', task_name: 'Réimpression' })], projects, tasks);
+    assert.deepEqual([r.projectId, r.newClient, r.newProject], ['p-old', '', '']);
+    assert.deepEqual(L.reviewSuggestions(null, projects, tasks), []);
+    assert.deepEqual(L.reviewSuggestions([null, 3], projects, tasks), []);
+  });
+});
+
+describe('tâches cochées en bas (Lot 27)', () => {
+  const labels = [{ id: 'meet', name: 'Réunion', color: 'bleu', is_meeting: true, position: 1 }];
+  const t = (id, clientId, extra = {}) => task({
+    id, client_name: clientId, project_name: 'P', projects: { id: 'p', name: 'P', clients: { id: clientId, name: clientId } }, ...extra,
+  });
+
+  test('dans un conteneur, les tâches cochées passent sous les tâches à faire (réunions comprises)', () => {
+    const list = [
+      t('a', 'c1', { is_completed: true }),
+      t('m', 'c1', { label_ids: ['meet'], start_time: '09:00', is_completed: true }),
+      t('b', 'c1'),
+      t('n', 'c1', { label_ids: ['meet'], start_time: '14:00' }),
+    ];
+    assert.deepEqual(L.groupDay(list, labels)[0].tasks.map((x) => x.id), ['n', 'b', 'm', 'a']);
+  });
+
+  test('un conteneur entièrement coché passe sous les autres, quel que soit son rang', () => {
+    const list = [
+      t('a', 'c1', { is_completed: true, group_rank: 1 }),
+      t('b', 'c2', { group_rank: 2 }),
+      t('c', 'c3', { is_completed: true }),
+      t('d', 'c3'), // c3 a encore une tâche à faire
+      t('e', 'c4', { is_completed: true, group_rank: 3 }),
+    ];
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c2', 'c3', 'c1', 'c4']);
+  });
+
+  test('une réunion déjà faite ne place plus son conteneur en tête de journée', () => {
+    const list = [
+      t('a', 'c1'),
+      t('m', 'c2', { label_ids: ['meet'], start_time: '08:00', is_completed: true }),
+      t('b', 'c2'),
+    ];
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c1', 'c2']);
+  });
+
+  test('décochée, la tâche retrouve sa place', () => {
+    const list = [t('a', 'c1', { group_rank: 1 }), t('b', 'c2', { group_rank: 2 })];
+    list[0].is_completed = true;
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c2', 'c1']);
+    list[0].is_completed = false;
+    assert.deepEqual(L.groupDay(list, labels).map((g) => g.key), ['c1', 'c2']);
+  });
+
+  test('doneLast : ordre conservé de part et d’autre, tâches ou conteneurs', () => {
+    const tasks = [{ id: 1, is_completed: true }, { id: 2 }, { id: 3, is_completed: true }, { id: 4 }];
+    assert.deepEqual(L.doneLast(tasks).map((x) => x.id), [2, 4, 1, 3]);
+    const groups = [{ key: 'a', tasks: [{ is_completed: true }] }, { key: 'b', tasks: [{ is_completed: true }, {}] }];
+    assert.deepEqual(L.doneLast(groups).map((g) => g.key), ['b', 'a']);
+  });
+});
+
+describe('suggestions de tâches : analyse locale du bloc-notes (Lot 26)', () => {
+  const projects = [
+    project('site', 'Refonte site', 'Acme'),
+    project('seo', 'SEO', 'Acme'),
+    project('logo', 'Logo', 'Boulangerie Bobo'),
+    project('fly', 'Flyers', 'Boulangerie Bobo', 'termine'),
+  ];
+  const tasks = [
+    task({ id: 't-parked', project_id: 'logo', task_name: 'Déclinaisons', day_of_week: null }),
+    task({ id: 't-planned', project_id: 'site', task_name: 'Maquette accueil', day_of_week: 'Mardi' }),
+  ];
+  const run = (note) => L.noteSuggestions(note, projects, tasks);
+  const brief = (list) => list.map((s) => [s.kind, s.project_id, s.task_id || s.task_name, s.day, s.estimated_hours]);
+
+  test('client · projet : une tâche par morceau, jour et durée attachés à leur morceau', () => {
+    const { suggestions } = run('- Acme · Refonte site : maquettes internes, devis v2 jeudi 2h');
+    assert.deepEqual(brief(suggestions), [
+      ['new_task', 'site', 'Maquettes internes', '', 0],
+      ['new_task', 'site', 'Devis v2', 'Jeudi', 2],
+    ]);
+    assert.equal(suggestions[0].note_excerpt, '- Acme · Refonte site : maquettes internes, devis v2 jeudi 2h');
+  });
+
+  test('durées : 3h30, « une demi-journée » rattachée à l’action qui précède, « 1,5 heure »', () => {
+    const { suggestions } = run('SEO : audit mots-clés mardi, une demi-journée\nRefonte site : intégration 3h30, recette 1,5 heure');
+    assert.deepEqual(brief(suggestions), [
+      ['new_task', 'seo', 'Audit mots-clés', 'Mardi', 4],
+      ['new_task', 'site', 'Intégration', '', 3.5],
+      ['new_task', 'site', 'Recette', '', 1.5],
+    ]);
+  });
+
+  test('un projet seul sert de contexte aux lignes suivantes, jusqu’à une ligne vide', () => {
+    const { suggestions, unmatched } = run('Refonte site\n- intégration header\n- maquette accueil\n\n- sans contexte');
+    assert.deepEqual(brief(suggestions), [
+      ['new_task', 'site', 'Intégration header', '', 0],
+      ['plan_existing', 'site', 't-planned', '', 0], // tâche existante au nom proche : pas de doublon
+    ]);
+    assert.deepEqual(unmatched, ['- sans contexte']);
+  });
+
+  test('projet cité sans action : ses tâches du sas sont proposées, au jour cité', () => {
+    assert.deepEqual(brief(run('- Boulangerie Bobo · Logo mercredi').suggestions), [['plan_existing', 'logo', 't-parked', 'Mercredi', 0]]);
+  });
+
+  test('client cité par un mot de son nom ; le nom d’un projet après les deux-points reste dans l’action', () => {
+    assert.deepEqual(brief(run('bobo : créer un logo pour le salon').suggestions), [['new_task', 'logo', 'Créer un logo pour le salon', '', 0]]);
+  });
+
+  test('client seul avec plusieurs projets en cours : projet deviné, signalé', () => {
+    const [s] = run('envoyer la facture à Acme').suggestions;
+    assert.deepEqual([s.project_id, s.task_name], ['site', 'Envoyer la facture']);
+    assert.match(s.reason, /deviné/);
+  });
+
+  test('lignes faites ignorées ; action sans projet reconnu listée à part', () => {
+    const { suggestions, unmatched } = run('- Acme · SEO : relance ✓\n[x] Refonte site : brief\nGlobex : kakémono salon');
+    assert.deepEqual(suggestions, []);
+    assert.deepEqual(unmatched, ['Globex : kakémono salon']);
+  });
+
+  test('les propositions passent la vérification : sas par défaut, 1 h sans durée', () => {
+    const reviewed = L.reviewSuggestions(run('Acme · Refonte site : maquettes').suggestions, projects, tasks);
+    assert.deepEqual(reviewed.map((r) => [r.kind, r.projectId, r.task_name, r.day, r.hours]), [['new', 'site', 'Maquettes', '', 1]]);
+  });
+});
+
+describe('« Copier pour Claude » (Lot 28)', () => {
+  const projects = [project('old', 'Flyers', 'Bobo', 'termine'), project('site', 'Refonte site', 'Acme'), project('logo', 'Logo', 'Bobo')];
+  const tasks = [
+    task({ id: 't-parked', project_id: 'logo', task_name: 'Déclinaisons', day_of_week: null, estimated_hours: 2 }),
+    task({ id: 't-done', project_id: 'site', task_name: 'Brief', is_completed: true }),
+  ];
+
+  test('claudePrompt : projets en cours puis archivés, tâches à faire, note et format de réponse', () => {
+    const { text, refs } = L.claudePrompt('  - Bobo : déclinaisons mardi ', 'semaine du 19 octobre', projects, tasks);
+    assert.deepEqual(refs, { projects: { P1: 'site', P2: 'logo', P3: 'old' }, tasks: { T1: 't-parked' } });
+    assert.match(text, /semaine du 19 octobre/);
+    assert.match(text, /P1 · Acme · Refonte site\nP2 · Bobo · Logo\nP3 · Bobo · Flyers \(archivé\)/);
+    assert.match(text, /T1 · P2 · Déclinaisons · 2 h · sas/);
+    assert.doesNotMatch(text, /Brief/); // tâche terminée non envoyée
+    assert.match(text, /BLOC-NOTES\n- Bobo : déclinaisons mardi$/);
+    assert.match(text, /"suggestions"/);
+  });
+
+  test('parseClaudeReply : bloc ```json toléré, codes traduits, jour et heures normalisés', () => {
+    const { refs } = L.claudePrompt('x', '', projects, tasks);
+    const reply = 'Voici :\n```json\n{"suggestions":[{"type":"planifier","projet":"p2","tache":"T1","nom":"Déclinaisons","heures":"","jour":"mardi","extrait":"déclinaisons mardi","remarque":""},'
+      + '{"type":"nouvelle","projet":"","nouveau_client":"Globex","nouveau_projet":"Salon","tache":"","nom":"Kakémono","heures":"1,5","jour":"","extrait":"kakémono"}]}\n```';
+    const raw = L.parseClaudeReply(reply, refs);
+    assert.deepEqual(raw.map((r) => [r.kind, r.project_id, r.task_id, r.task_name, r.estimated_hours, r.day]), [
+      ['plan_existing', 'logo', 't-parked', 'Déclinaisons', 0, 'Mardi'],
+      ['new_task', '', '', 'Kakémono', 1.5, ''],
+    ]);
+    assert.deepEqual(L.reviewSuggestions(raw, projects, tasks).map((r) => [r.kind, r.newProject || r.taskId]), [['plan', 't-parked'], ['new', 'Salon']]);
+  });
+
+  test('parseClaudeReply : messages clairs si la réponse est incomplète', () => {
+    assert.throws(() => L.parseClaudeReply('Bonjour !', { projects: {}, tasks: {} }), /Aucun bloc JSON/);
+    assert.throws(() => L.parseClaudeReply('{"suggestions": [', { projects: {}, tasks: {} }), /Aucun bloc JSON|illisible/);
+    assert.throws(() => L.parseClaudeReply('{"autre": 1}', { projects: {}, tasks: {} }), /suggestions/);
   });
 });

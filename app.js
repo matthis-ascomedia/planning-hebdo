@@ -7,8 +7,8 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Règles métier pures : voir logic.js (testées dans tests/logic.test.js)
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
-  clientKey, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, monthlyRank, dueOccurrences, recurrenceLabel,
+  clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -27,6 +27,47 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.28.0', type: 'mineure', lot: 'Lot 28', date: '2026-10-21',
+    items: [
+      'Bloc-notes : bouton « Copier pour Claude ». La note, tes projets et tes tâches sont copiés avec les consignes, à coller dans ta conversation Claude (abonnement, sans coût supplémentaire).',
+      'La réponse de Claude, recollée dans la fenêtre, s’affiche dans les suggestions habituelles : tu valides chaque tâche avant de l’ajouter.',
+      'Le lien de ta conversation Claude dédiée se modifie dans la fenêtre et reste mémorisé sur l’appareil.',
+    ],
+  },
+  {
+    version: '1.27.0', type: 'mineure', lot: 'Lot 27', date: '2026-10-20',
+    items: [
+      'Planning : une tâche cochée passe sous les tâches à faire de son conteneur ; un conteneur entièrement coché passe en bas de la journée.',
+      'Décocher une tâche la remet à sa place ; toutes les tâches restent déplaçables par glisser-déposer.',
+    ],
+  },
+  {
+    version: '1.26.0', type: 'mineure', lot: 'Lot 26', date: '2026-10-21',
+    items: [
+      'Bloc-notes : bouton « Suggérer des tâches ». L’application lit la note et propose, projet par projet, les tâches à créer dans le sas et celles du sas à planifier.',
+      'Analyse faite dans le navigateur, sans service externe ni coût : une ligne cite le client et/ou le projet (« Acme · Refonte site : maquettes, devis jeudi 2h ») ; virgules, jour et durée sont reconnus. Un projet seul sur une ligne vaut pour les lignes suivantes.',
+      'Chaque suggestion se valide : case à cocher, nom, projet, heures et destination (sas ou jour) modifiables. Rien n’est créé sans « Appliquer ».',
+    ],
+  },
+  {
+    version: '1.25.0', type: 'mineure', lot: 'Lot 25', date: '2026-10-20',
+    items: [
+      'Bloc-notes de la semaine : une pastille sur le bord gauche déplie un volet pour noter les projets prévus avant de les placer dans le planning.',
+      'Enregistrement automatique pendant la saisie (gardé sur l’appareil en cas de coupure réseau) ; une note par semaine, ‹ › pour consulter les autres.',
+      'Entrée prolonge une liste à puces ou numérotée ; « Reprendre la semaine précédente » recopie la note d’avant dans une note vide.',
+    ],
+  },
+  {
+    version: '1.24.1', type: 'patch', lot: 'Lot 24', date: '2026-10-20',
+    items: [
+      'Commentaires d’une carte : le texte garde toute la largeur, les boutons « → note » et × apparaissent par-dessus au survol.',
+      'Historique et détail d’un projet : les heures prévues sont suivies du temps passé quand il diffère.',
+      'Les prochaines semaines closes comptent le temps passé des tâches terminées (heures prévues à défaut) dans leur total et le temps par client.',
+      'Archives : les boutons « Rétablir » et « Supprimer » restent alignés à droite des tâches consignées.',
+      '« Nouvelle Semaine » : messages accordés au nombre de tâches, tâches consignées mentionnées aussi quand des commentaires restent à traiter.',
+    ],
+  },
   {
     version: '1.24.0', type: 'mineure', lot: 'Lot 24', date: '2026-10-19',
     items: [
@@ -238,6 +279,7 @@ let weeks = []; // semaines closes par « Nouvelle Semaine » (instantanés)
 let projectTypes = []; // types de projet par défaut (Réglages), ordonnés par position
 let labels = []; // étiquettes de tâche (Réglages), ordonnées par position = priorité visuelle
 let recurrences = []; // séries de tâches récurrentes (règle + modèle)
+let notes = []; // bloc-notes : une note par semaine (week_notes, Lot 25)
 const openWeeks = new Set(); // fiches de semaine dépliées dans l'historique
 const openComments = new Set(); // cartes dont la liste de commentaires est dépliée
 const todoDrafts = new Set(); // cartes dont le prochain commentaire est « à traiter » (par défaut : une note)
@@ -290,15 +332,17 @@ function headers(extra) {
   };
 }
 
-async function api(table, query = '', { method = 'GET', body, prefer } = {}, retried = false) {
+// `keepalive` : la requête aboutit même si la page se ferme (enregistrement du bloc-notes).
+async function api(table, query = '', { method = 'GET', body, prefer, keepalive = false } = {}, retried = false) {
   const res = await fetch(`${REST}/${table}${query}`, {
     method,
     headers: headers(prefer ? { Prefer: prefer } : undefined),
     body: body ? JSON.stringify(body) : undefined,
+    keepalive,
   });
   if (res.status === 401 && session && !retried) {
     try { await refreshSession(); } catch { setAuthed(false); throw new Error('Session expirée, reconnecte-toi.'); }
-    return api(table, query, { method, body, prefer }, true);
+    return api(table, query, { method, body, prefer, keepalive }, true);
   }
   if (!res.ok) throw new Error(`Supabase ${res.status} : ${await res.text()}`);
   return res.status === 204 ? null : res.json();
@@ -319,6 +363,8 @@ const db = {
   listTypes: () => api('project_types', '?select=*&order=position.asc'),
   listLabels: () => api('labels', '?select=*&order=position.asc'),
   listRecurrences: () => api('recurrences', '?select=*&order=created_at.asc'),
+  listNotes: () => api('week_notes', '?select=*&order=week_start.desc'),
+  saveNote: (row, opts) => api('week_notes', '?on_conflict=week_start', { method: 'POST', body: row, prefer: 'resolution=merge-duplicates,return=representation', ...opts }),
 };
 
 // Retrouve (ou crée) le client puis le projet correspondant.
@@ -592,20 +638,23 @@ function commentBadgeHTML(t) {
     class="inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 tabular-nums transition ${cls}">${BUBBLE}${pending || total}</button>`;
 }
 
-// Une note n'a pas de case à cocher ; un point à traiter oui. Le bouton de droite (au survol) change la nature.
+// Une note n'a pas de case à cocher ; un point à traiter oui. Les boutons de droite (au survol, en surimpression :
+// le texte garde toute la largeur) changent la nature du commentaire ou le suppriment.
 function commentHTML(c) {
   const lead = c.is_note
     ? '<span class="mt-px w-[15px] shrink-0 text-center text-slate-300 leading-none" title="Note" aria-label="Note">•</span>'
     : `<input type="checkbox" class="chk mt-px" ${c.is_done ? 'checked' : ''} data-comment-toggle="${c.id}" aria-label="Commentaire traité" />`;
   const kind = c.is_note ? 'à traiter' : 'note';
   return `
-    <li class="group/c flex items-start gap-1.5 text-xs" data-lot="Lot 20">
+    <li class="group/c relative flex items-start gap-1.5 text-xs" data-lot="Lot 20">
       ${lead}
       <span class="min-w-0 flex-1 break-words whitespace-pre-line ${c.is_done ? 'line-through text-slate-400' : 'text-slate-700'}">${esc(c.body)}</span>
-      <button type="button" class="opacity-0 group-hover/c:opacity-100 focus-visible:opacity-100 text-[10px] font-medium text-slate-400 hover:text-slate-800 whitespace-nowrap leading-none transition"
-              data-comment-kind="${c.id}" title="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}" aria-label="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}">→ ${kind}</button>
-      <button type="button" class="opacity-0 group-hover/c:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 leading-none transition"
-              data-delete-comment="${c.id}" title="Supprimer le commentaire" aria-label="Supprimer le commentaire">×</button>
+      <span class="absolute -top-0.5 right-0 flex items-center gap-1.5 rounded bg-white/95 px-1 py-0.5 shadow-sm ring-1 ring-slate-200 opacity-0 group-hover/c:opacity-100 focus-within:opacity-100 transition">
+        <button type="button" class="text-[10px] font-medium text-slate-500 hover:text-slate-900 whitespace-nowrap leading-none"
+                data-comment-kind="${c.id}" title="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}" aria-label="Transformer en ${kind === 'note' ? 'simple note' : 'point à traiter'}">→ ${kind}</button>
+        <button type="button" class="text-slate-400 hover:text-red-500 leading-none"
+                data-delete-comment="${c.id}" title="Supprimer le commentaire" aria-label="Supprimer le commentaire">×</button>
+      </span>
     </li>`;
 }
 
@@ -880,17 +929,21 @@ function renderArchives() {
         const week = weeks.find((w) => w.id === t.week_id);
         const spent = hoursSpent(t);
         return `
-          <li class="flex flex-wrap items-center gap-x-3 gap-y-1 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
-            <span class="min-w-0 flex-1 basis-48">
+          <li class="flex flex-wrap items-center gap-x-3 gap-y-2 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
+            <span class="min-w-0 flex-1 basis-56">
               <span class="block text-xs text-slate-500 truncate">${esc(taskClient(t))} · ${esc(taskProject(t))}</span>
               <span class="block text-sm font-medium truncate">${esc(t.task_name)}</span>
+              <span class="block text-xs text-slate-500 tabular-nums">
+                <span title="Heures prévues puis temps passé">${fmtH(t.estimated_hours)} prévues · <span class="font-medium ${spent > (+t.estimated_hours || 0) ? 'text-amber-700' : 'text-slate-700'}">${fmtH(spent)} passées</span></span>
+                · ${esc(fmtDate(t.consigned_at, SHORT_DATE))} · ${week ? `semaine close le ${esc(fmtDate(week.closed_at, SHORT_DATE))}` : 'prochaine semaine'}
+              </span>
             </span>
-            <span class="text-xs text-slate-600 tabular-nums" title="Heures prévues puis temps passé">${fmtH(t.estimated_hours)} prévues · <span class="font-medium ${spent > (+t.estimated_hours || 0) ? 'text-amber-700' : ''}">${fmtH(spent)} passées</span></span>
-            <span class="text-xs text-slate-500">${esc(fmtDate(t.consigned_at, SHORT_DATE))} · ${week ? `semaine close le ${esc(fmtDate(week.closed_at, SHORT_DATE))}` : 'prochaine semaine'}</span>
-            ${canUnconsign(t) ? `<button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
-                    data-unconsign="${t.id}" title="Remettre la tâche dans le planning">Rétablir</button>` : ''}
-            <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
-                    data-delete-consigned="${t.id}" title="Supprimer définitivement la tâche" aria-label="Supprimer définitivement la tâche ${esc(t.task_name)}">Supprimer</button>
+            <span class="ml-auto flex shrink-0 items-center gap-1.5">
+              ${canUnconsign(t) ? `<button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
+                      data-unconsign="${t.id}" title="Remettre la tâche dans le planning">Rétablir</button>` : ''}
+              <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
+                      data-delete-consigned="${t.id}" title="Supprimer définitivement la tâche" aria-label="Supprimer définitivement la tâche ${esc(t.task_name)}">Supprimer</button>
+            </span>
           </li>`;
       }).join('')}</ul>`
     : '<p class="text-sm text-slate-400">Aucune tâche consignée : « Consigner » apparaît sur une tâche terminée du planning.</p>';
@@ -1424,14 +1477,14 @@ board.addEventListener('drop', (e) => {
 });
 
 // Place des tâches (une, ou tout un conteneur) dans un jour, leur conteneur à la position `at` ;
-// renumérote les conteneurs de ce jour (group_rank 1..n).
+// renumérote les conteneurs de ce jour (group_rank 1..n). Les conteneurs entièrement cochés restent en bas (Lot 27).
 function placeInDay(moving, day, at) {
   const key = clientKey(moving[0]);
   const prev = moving.map((t) => ({ t, day: t.day_of_week }));
   const ranks = tasks.map((t) => ({ t, rank: t.group_rank ?? null }));
   moving.forEach((t) => { t.day_of_week = day; });
   const groups = groupDay(tasks.filter((t) => t.day_of_week === day), labels);
-  const order = placeAt(groups.map((g) => g.key), key, at).map((k) => groups.find((g) => g.key === k));
+  const order = doneLast(placeAt(groups.map((g) => g.key), key, at).map((k) => groups.find((g) => g.key === k)));
   const patches = rankPatches(order);
   patches.forEach((p) => p.ids.forEach((id) => { tasks.find((t) => t.id === id).group_rank = p.rank; }));
   const changedDay = prev.filter((x) => x.day !== day).map((x) => x.t.id);
@@ -1569,10 +1622,13 @@ $('#new-week').addEventListener('click', () => {
   weekPending = finishedWithPending(tasks, comments);
   const finished = tasks.filter((t) => t.is_completed).length;
   const consigned = consignedPending(history).length;
+  const s = (n) => (n > 1 ? 's' : '');
   if (!weekPending.length) {
     const recorded = finished || consigned;
+    const parts = [finished && `archiver ${plural(finished, 'tâche')} terminée${s(finished)}`,
+      consigned && `compter ${plural(consigned, 'tâche')} déjà consignée${s(consigned)}`].filter(Boolean);
     const question = recorded
-      ? `Nouvelle semaine : archiver ${finished} tâche(s) terminée(s)${consigned ? ` et compter ${consigned} tâche(s) déjà consignée(s)` : ''}, enregistrer la semaine dans l'historique et ramener les autres sur Lundi ?`
+      ? `Nouvelle semaine : ${parts.join(' et ')}, enregistrer la semaine dans l’historique et ramener les autres sur Lundi ?`
       : 'Aucune tâche terminée : rien à archiver, aucune semaine ne sera enregistrée. Ramener les tâches planifiées sur Lundi ?';
     askConfirm({ title: 'Nouvelle semaine', message: question, confirmLabel: recorded ? 'Archiver et continuer' : 'Ramener sur Lundi' })
       .then((ok) => { if (ok) startNewWeek(); });
@@ -1585,9 +1641,10 @@ $('#new-week').addEventListener('click', () => {
       <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium bg-amber-100 text-amber-800 rounded px-1.5 py-0.5 tabular-nums">${BUBBLE}${count}</span>
     </li>`).join('');
   const others = finished - weekPending.length;
-  $('#week-summary').textContent = `${finished} tâche${finished > 1 ? 's' : ''} terminée${finished > 1 ? 's' : ''} au total`
+  $('#week-summary').textContent = `${finished} tâche${s(finished)} terminée${s(finished)} au total`
     + (others > 1 ? ` : les ${others} autres seront archivées dans tous les cas.`
-      : others ? ' : l’autre sera archivée dans tous les cas.' : '.');
+      : others ? ' : l’autre sera archivée dans tous les cas.' : '.')
+    + (consigned ? ` ${plural(consigned, 'tâche')} déjà consignée${s(consigned)} ${consigned > 1 ? 'seront aussi comptées' : 'sera aussi comptée'} dans la semaine.` : '');
   $('#week-keep').title = weekPending.length > 1 ? 'Garder ces tâches dans le planning cette semaine' : 'Garder cette tâche dans le planning cette semaine';
   weekDialog.showModal();
 });
@@ -1799,8 +1856,7 @@ function openProject(id, { keepForm = false } = {}) {
         <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
         ${labelChipsHTML(t)}
         <span class="text-xs text-slate-500">${esc(status)}</span>
-        <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}${t.actual_hours != null && +t.actual_hours !== +t.estimated_hours
-          ? ` <span class="${+t.actual_hours > +t.estimated_hours ? 'text-amber-700' : 'text-slate-500'}" title="Temps passé" data-lot="Lot 22">→ ${fmtH(t.actual_hours)}</span>` : ''}</span>
+        ${hoursHTML(t)}
       </div>
       ${list.length ? `<ul class="mt-1 pl-3 space-y-1" data-lot="Lot 10">${list.map(commentHTML).join('')}</ul>` : ''}
     </li>`;
@@ -1815,6 +1871,10 @@ function openProject(id, { keepForm = false } = {}) {
     : '<li class="text-sm text-slate-400 py-1">Aucune tâche rattachée.</li>';
   if (!projectDialog.open) projectDialog.showModal();
 }
+
+// Heures prévues d'une tâche, suivies du temps passé s'il diffère (ambre au-delà du prévu).
+const hoursHTML = (t) => `<span class="shrink-0 text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}${t.actual_hours != null && +t.actual_hours !== +t.estimated_hours
+  ? ` <span class="${+t.actual_hours > +t.estimated_hours ? 'text-amber-700' : 'text-slate-500'}" title="Temps passé" data-lot="Lot 22">→ ${fmtH(t.actual_hours)}</span>` : ''}</span>`;
 
 projectDialog.addEventListener('click', (e) => { if (e.target === projectDialog) projectDialog.close(); });
 
@@ -2041,7 +2101,7 @@ function weekHTML(w) {
   return `
     <details class="group bg-white border border-slate-200 rounded-xl shadow-sm" data-week="${w.id}" ${openWeeks.has(w.id) ? 'open' : ''}>
       <summary class="flex flex-wrap items-center gap-x-4 gap-y-1 p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <span class="min-w-0 flex-1">
+        <span class="min-w-0 flex-1 basis-56">
           <span class="block text-sm font-semibold first-letter:uppercase">Semaine close le ${esc(fmtDate(w.closed_at, LONG_DATE))}</span>
           <span class="block text-xs text-slate-500">${w.from ? `Du ${esc(fmtDate(w.from, SHORT_DATE))} au ${esc(fmtDate(w.closed_at, SHORT_DATE))}` : 'Première semaine enregistrée'}</span>
         </span>
@@ -2074,7 +2134,7 @@ function weekHTML(w) {
                 <div class="flex items-center gap-2 text-sm">
                   <span class="min-w-0 flex-1 truncate">${esc(t.task_name)}</span>
                   ${labelChipsHTML(t)}
-                  <span class="text-xs font-medium tabular-nums">${fmtH(t.estimated_hours)}</span>
+                  ${hoursHTML(t)}
                   <button type="button" data-lot="Lot 21" data-duplicate-history="${t.id}"
                     class="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-900 focus-visible:text-slate-900 transition"
                     title="Dupliquer dans le sas d’attente (semaine active)" aria-label="Dupliquer « ${esc(t.task_name)} » dans le sas d’attente">${COPY_ICON}</button>
@@ -2814,6 +2874,433 @@ $('#gcal-close').addEventListener('click', closeGcal);
 $('#gcal-cancel').addEventListener('click', closeGcal);
 gcalDialog.addEventListener('click', (e) => { if (e.target === gcalDialog) closeGcal(); });
 
+// ---------- Bloc-notes de la semaine (Lot 25) ----------
+// Volet gauche masqué par défaut. Une note par semaine, enregistrée après une pause de saisie, au repli du volet,
+// au changement de semaine et quand la page passe en arrière-plan. Un brouillon local protège la saisie tant
+// qu'elle n'est pas enregistrée (réseau coupé, page fermée) : il est renvoyé à la connexion suivante.
+const NOTE_DRAFT_KEY = 'planning_note_draft';
+const notesPanel = $('#notes-panel');
+const notesText = $('#notes-text');
+let noteWeek = weekKey(new Date()); // semaine affichée
+let noteDirty = false; // saisie pas encore enregistrée
+let noteTimer = null;
+let noteQueue = Promise.resolve(); // un enregistrement à la fois, dans l'ordre
+
+const noteOf = (week) => notes.find((n) => n.week_start === week);
+const notesOpen = () => notesPanel.dataset.open === 'true';
+const RELATIVE_WEEK = { '-1': 'semaine dernière', 0: 'cette semaine', 1: 'semaine prochaine' };
+
+function noteStatus(msg, error = false) {
+  const el = $('#notes-status');
+  el.textContent = msg;
+  el.classList.toggle('text-red-700', error);
+  el.classList.toggle('text-slate-500', !error);
+}
+
+function setNotesOpen(open) {
+  notesPanel.dataset.open = String(open);
+  notesPanel.classList.toggle('-translate-x-full', !open);
+  $('#notes-body').inert = !open;
+  $('#notes-tab').setAttribute('aria-expanded', String(open));
+  $('#notes-tab').title = open ? 'Replier le bloc-notes' : 'Bloc-notes de la semaine';
+  if (open) {
+    renderNotes();
+    notesText.focus();
+  } else {
+    saveNote();
+  }
+}
+
+// « Reprendre la semaine précédente » : seulement sur une note vide, si la précédente a du contenu.
+// « Suggérer des tâches » : dès que la note a du contenu.
+function syncNoteActions() {
+  const empty = !notesText.value.trim();
+  const previous = noteOf(shiftWeek(noteWeek, -1))?.body ?? '';
+  $('#notes-reuse').classList.toggle('hidden', !empty || !previous.trim());
+  $('#notes-suggest').disabled = empty;
+  $('#notes-claude').disabled = empty;
+}
+
+const weekTitle = (week) => `Semaine du ${new Date(`${week}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}`;
+
+// En-tête de la semaine affichée ; le texte n'est remplacé que s'il n'y a pas de saisie en attente.
+function renderNotes() {
+  const offset = weekOffset(noteWeek, weekKey(new Date()));
+  $('#notes-week').textContent = `${weekTitle(noteWeek)}${RELATIVE_WEEK[offset] ? ` · ${RELATIVE_WEEK[offset]}` : ''}`;
+  $('#notes-today').classList.toggle('hidden', offset === 0);
+  if (!noteDirty) notesText.value = noteOf(noteWeek)?.body ?? '';
+  syncNoteActions();
+}
+
+function readDraft() {
+  try { return JSON.parse(localStorage.getItem(NOTE_DRAFT_KEY)); } catch { return null; }
+}
+function keepDraft() {
+  try { localStorage.setItem(NOTE_DRAFT_KEY, JSON.stringify({ week: noteWeek, body: notesText.value, at: new Date().toISOString() })); } catch { /* stockage indisponible */ }
+}
+function dropDraft(week, body) {
+  const draft = readDraft();
+  if (draft?.week !== week || draft.body !== body) return;
+  try { localStorage.removeItem(NOTE_DRAFT_KEY); } catch { /* stockage indisponible */ }
+}
+
+const noteError = (ex) => (ex instanceof TypeError
+  ? 'Hors ligne : notes gardées sur cet appareil, nouvel essai dans un instant.'
+  : /week_notes/.test(ex.message) && /404|schema cache/.test(ex.message)
+    ? 'Bloc-notes pas encore installé : exécute supabase/lot-25-bloc-notes.sql dans Supabase.'
+    : `Notes non enregistrées : ${ex.message}`);
+
+// Enregistre la saisie en attente ; la promesse renvoyée ne rejette jamais (l'erreur s'affiche sous la note).
+function saveNote({ keepalive = false } = {}) {
+  clearTimeout(noteTimer);
+  if (!noteDirty) return noteQueue;
+  const row = { week_start: noteWeek, body: notesText.value, updated_at: new Date().toISOString() };
+  noteDirty = false;
+  noteStatus('Enregistrement…');
+  noteQueue = noteQueue.then(async () => {
+    try {
+      const [saved] = await db.saveNote(row, { keepalive });
+      notes = notes.filter((n) => n.week_start !== row.week_start).concat(saved);
+      dropDraft(row.week_start, row.body);
+      if (!noteDirty) noteStatus(`Enregistré à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`);
+    } catch (ex) {
+      console.error(ex);
+      if (row.week_start === noteWeek && !noteDirty) {
+        noteDirty = true;
+        noteTimer = setTimeout(saveNote, 15000);
+      }
+      noteStatus(noteError(ex), true);
+    }
+  });
+  return noteQueue;
+}
+
+// Brouillon d'une saisie interrompue : renvoyé s'il est plus récent que la note enregistrée.
+async function restoreDraft() {
+  const draft = readDraft();
+  if (!draft?.week) return;
+  const saved = noteOf(draft.week);
+  if (!saved || (saved.body !== draft.body && new Date(draft.at) > new Date(saved.updated_at))) {
+    try {
+      const [row] = await db.saveNote({ week_start: draft.week, body: draft.body, updated_at: draft.at });
+      notes = notes.filter((n) => n.week_start !== draft.week).concat(row);
+      if (draft.week === noteWeek && !noteDirty) renderNotes();
+    } catch (ex) { console.error(ex); return; } // le brouillon reste pour la prochaine fois
+  }
+  dropDraft(draft.week, draft.body);
+}
+
+async function showNoteWeek(week) {
+  await saveNote();
+  if (noteDirty) return; // enregistrement impossible : on reste sur la semaine en cours de saisie
+  noteWeek = week;
+  noteStatus('');
+  renderNotes();
+  notesText.focus();
+}
+
+// Remplace la sélection du bloc-notes : execCommand garde l'annulation (Ctrl+Z) du navigateur, setRangeText en repli.
+function editNote(from, to, insert) {
+  notesText.setSelectionRange(from, to);
+  const done = insert ? document.execCommand('insertText', false, insert) : document.execCommand('delete');
+  if (!done) {
+    notesText.setRangeText(insert, from, to, 'end');
+    notesText.dispatchEvent(new Event('input'));
+  }
+}
+
+notesText.addEventListener('input', () => {
+  noteDirty = true;
+  keepDraft();
+  syncNoteActions();
+  noteStatus('Modifications en cours…');
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(saveNote, 800);
+});
+
+// Entrée sur une ligne de liste : la puce continue (ou s'arrête sur une puce vide).
+notesText.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+  if (notesText.selectionStart !== notesText.selectionEnd) return;
+  const edit = continueList(notesText.value, notesText.selectionStart);
+  if (!edit) return;
+  e.preventDefault();
+  editNote(edit.from, edit.to, edit.insert);
+});
+
+notesPanel.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !notesOpen()) return;
+  e.preventDefault();
+  setNotesOpen(false);
+  $('#notes-tab').focus();
+});
+$('#notes-tab').addEventListener('click', () => setNotesOpen(!notesOpen()));
+$('#notes-close').addEventListener('click', () => { setNotesOpen(false); $('#notes-tab').focus(); });
+$('#notes-prev').addEventListener('click', () => showNoteWeek(shiftWeek(noteWeek, -1)));
+$('#notes-next').addEventListener('click', () => showNoteWeek(shiftWeek(noteWeek, 1)));
+$('#notes-today').addEventListener('click', () => showNoteWeek(weekKey(new Date())));
+$('#notes-reuse').addEventListener('click', () => {
+  editNote(0, notesText.value.length, noteOf(shiftWeek(noteWeek, -1))?.body ?? '');
+  notesText.focus();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saveNote({ keepalive: true });
+});
+
+// ---------- Suggestions de tâches tirées du bloc-notes (Lot 26) ----------
+// Analyse locale de la note (noteSuggestions, sans service externe ni coût), propositions vérifiées
+// (reviewSuggestions) puis validées une par une : nouvelles tâches (sas, ou jour choisi) et tâches du sas à planifier.
+// Une ligne d'action sans projet reconnu est proposée décochée, projet à choisir.
+const suggestDialog = $('#suggest-dialog');
+let suggItems = []; // propositions vérifiées + choix en cours (retenue, nom, projet, heures, jour)
+
+const SUGG_BADGE = {
+  new: ['Nouvelle tâche', 'bg-emerald-50 text-emerald-700'],
+  plan: ['Dans le sas', 'bg-blue-50 text-blue-700'],
+  planned: ['Déjà planifiée', 'bg-slate-100 text-slate-500'],
+};
+const SUGG_FIELD = 'px-2 py-1 text-sm rounded-md bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none';
+
+function suggestStatus(msg, { error = false } = {}) {
+  const el = $('#suggest-status');
+  el.textContent = msg;
+  el.classList.toggle('text-red-700', error);
+  el.classList.toggle('text-slate-600', !error);
+}
+
+function openSuggestions() {
+  const note = notesText.value.trim();
+  if (!note) return;
+  saveNote();
+  const { suggestions, unmatched } = noteSuggestions(note, projects, tasks);
+  const orphans = unmatched.flatMap((line) => {
+    // « Globex : kakémono » : ce qui précède les deux-points est le nom inconnu, pas une tâche.
+    const [head, ...tail] = line.replace(/^\s*(?:[-*•]|\d{1,3}[.)])\s+/, '').split(':');
+    const unknown = tail.length && head.trim() ? head.trim() : '';
+    return lineActions(unknown ? tail.join(':') : line, []).map((a) => ({
+      kind: 'new', taskId: '', projectId: '', newClient: '', newProject: '', task_name: a.name, hours: a.hours || 1, day: a.day, excerpt: line,
+      reason: unknown ? `« ${unknown} » ne correspond à aucun client ni projet : choisis le projet pour retenir la tâche`
+        : 'Aucun projet reconnu : choisis-le pour retenir la tâche',
+      picked: false,
+    }));
+  });
+  showSuggestions(suggestions, orphans);
+}
+
+// Propositions brutes (analyse locale ou réponse de Claude) vérifiées puis affichées pour validation.
+function showSuggestions(raw, extra = []) {
+  suggItems = reviewSuggestions(raw, projects, tasks).map((it) => ({ ...it, picked: it.kind !== 'planned' })).concat(extra);
+  $('#suggest-week').textContent = `D’après le bloc-notes de la ${weekTitle(noteWeek).toLowerCase()}`;
+  suggestDialog.showModal();
+  renderSuggestions();
+}
+
+function renderSuggestions() {
+  const byName = (a, b) => a.clients.name.localeCompare(b.clients.name) || a.name.localeCompare(b.name);
+  const open = projects.filter((p) => p.status === 'en_cours').sort(byName);
+  const projectOptions = (it) => {
+    const current = projects.find((p) => p.id === it.projectId);
+    const choices = current && current.status !== 'en_cours' ? [current, ...open] : open;
+    const first = it.newProject
+      ? `<option value="" ${it.projectId ? '' : 'selected'}>+ Nouveau projet : ${esc(it.newClient || DEFAULT_CLIENT)} · ${esc(it.newProject)}</option>`
+      : it.projectId ? '' : '<option value="">Choisir un projet…</option>';
+    return first + choices.map((p) => `<option value="${p.id}" ${p.id === it.projectId ? 'selected' : ''}>${esc(p.clients.name)} · ${esc(p.name)}${p.status !== 'en_cours' ? ' (archivé : sera rouvert)' : ''}</option>`).join('');
+  };
+  const dayOptions = (it) => (it.kind === 'new' ? `<option value="" ${it.day ? '' : 'selected'}>Sas d’attente</option>` : '')
+    + DAYS.map((d) => `<option ${d === it.day ? 'selected' : ''}>${d}</option>`).join('');
+  $('#suggest-list').innerHTML = suggItems.map((it, i) => {
+    const [label, cls] = SUGG_BADGE[it.kind];
+    const p = projects.find((x) => x.id === it.projectId);
+    const active = it.kind !== 'planned';
+    const origin = [it.excerpt && `« ${esc(it.excerpt)} »`, it.reason && `<span class="text-slate-400">${esc(it.reason)}</span>`].filter(Boolean).join(' ');
+    return `
+      <li class="flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-2.5 ${active ? '' : 'opacity-60'}">
+        <input type="checkbox" class="chk mt-2" data-sugg-pick="${i}" ${it.picked ? 'checked' : ''} ${active ? '' : 'disabled'} aria-label="Retenir « ${esc(it.task_name)} »" />
+        <div class="min-w-0 flex-1 basis-56">
+          ${it.kind === 'new'
+            ? `<input data-sugg-name="${i}" value="${esc(it.task_name)}" maxlength="200" autocomplete="off" aria-label="Nom de la tâche" class="w-full ${SUGG_FIELD} font-medium" />`
+            : `<p class="px-2 py-1 text-sm font-medium break-words">${esc(it.task_name)}</p>`}
+          ${origin ? `<p class="mt-0.5 px-2 text-xs text-slate-500 break-words">${origin}</p>` : ''}
+        </div>
+        <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
+          ${it.kind === 'new'
+            ? `<select data-sugg-project="${i}" aria-label="Projet" class="min-w-0 max-w-[16rem] ${SUGG_FIELD}">${projectOptions(it)}</select>
+               <input data-sugg-hours="${i}" type="number" min="0" step="0.25" value="${it.hours}" aria-label="Heures" title="Heures" class="w-20 ${SUGG_FIELD}" />`
+            : `<span class="min-w-0 max-w-[16rem] truncate text-xs text-slate-500">${p ? `${esc(p.clients.name)} · ${esc(p.name)} · ` : ''}${fmtH(it.hours)}</span>`}
+          ${active ? `<select data-sugg-day="${i}" aria-label="Destination" class="${SUGG_FIELD}">${dayOptions(it)}</select>` : `<span class="text-xs text-slate-500">${esc(it.day)}</span>`}
+          <span class="shrink-0 whitespace-nowrap text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
+        </div>
+      </li>`;
+  }).join('') || '<li class="px-3 py-3 text-sm text-slate-400">Aucune tâche à proposer.</li>';
+  $('#suggest-list').classList.remove('hidden');
+  const count = (kind) => suggItems.filter((it) => it.kind === kind).length;
+  const s = (n) => (n > 1 ? 's' : '');
+  const parts = [
+    count('new') && `${count('new')} nouvelle${s(count('new'))} tâche${s(count('new'))}`,
+    count('plan') && `${count('plan')} à planifier`,
+    count('planned') && `${count('planned')} déjà planifiée${s(count('planned'))}`,
+  ].filter(Boolean);
+  suggestStatus(parts.length ? `${parts.join(' · ')}. Coche ce que tu retiens, ajuste si besoin, puis applique.`
+    : 'Aucune tâche reconnue. Cite le client ou le projet sur la ligne (ex. « Acme · Refonte site : maquettes, devis jeudi 2h »).');
+  syncSuggestApply();
+}
+
+function syncSuggestApply() {
+  const n = suggItems.filter((it) => it.picked && it.kind !== 'planned').length;
+  $('#suggest-apply').disabled = !n;
+  $('#suggest-apply').textContent = n ? `Appliquer (${n})` : 'Appliquer';
+}
+
+// Saisies dans la liste : mises à jour sur place (pas de nouveau rendu, le focus reste dans le champ).
+function onSuggestEdit(e) {
+  const { suggPick, suggName, suggProject, suggHours, suggDay } = e.target.dataset;
+  const it = suggItems[suggPick ?? suggName ?? suggProject ?? suggHours ?? suggDay];
+  if (!it) return;
+  if (suggPick != null) it.picked = e.target.checked;
+  if (suggName != null) it.task_name = e.target.value;
+  if (suggProject != null) it.projectId = e.target.value;
+  if (suggHours != null) it.hours = e.target.value;
+  if (suggDay != null) it.day = e.target.value;
+  syncSuggestApply();
+}
+$('#suggest-list').addEventListener('input', onSuggestEdit);
+$('#suggest-list').addEventListener('change', onSuggestEdit);
+
+$('#suggest-apply').addEventListener('click', async () => {
+  const picked = suggItems.filter((it) => it.picked && it.kind !== 'planned');
+  const creations = picked.filter((it) => it.kind === 'new');
+  const plans = picked.filter((it) => it.kind === 'plan');
+  try {
+    creations.forEach((it) => {
+      if (!it.task_name.trim()) throw new Error('Une tâche retenue n’a pas de nom.');
+      if (!it.projectId && !it.newProject) throw new Error(`Choisis le projet de « ${it.task_name.trim()} ».`);
+      it.estimated_hours = parseOptionalHours(it.hours) ?? 0;
+    });
+  } catch (ex) { suggestStatus(ex.message, { error: true }); return; }
+  $('#suggest-apply').disabled = true;
+  suggestStatus('Enregistrement…');
+  try {
+    if (creations.length) {
+      const rows = [];
+      for (const it of creations) {
+        const project = it.projectId ? projects.find((p) => p.id === it.projectId) : await ensureProject(it.newClient, it.newProject);
+        await reopenIfArchived(project);
+        rows.push({
+          project_id: project.id, client_name: project.clients.name, project_name: project.name, task_name: it.task_name.trim(),
+          estimated_hours: it.estimated_hours, day_of_week: it.day || null, is_completed: false, label_ids: [],
+        });
+      }
+      tasks = tasks.concat(await db.insert(rows));
+      suggItems = suggItems.filter((it) => !creations.includes(it)); // déjà créées : pas de doublon si la suite échoue
+    }
+    for (const day of DAYS) {
+      const batch = plans.filter((it) => it.day === day);
+      if (!batch.length) continue;
+      const ids = batch.map((it) => it.taskId);
+      await api('tasks', `?id=in.(${ids.join(',')})`, { method: 'PATCH', body: { day_of_week: day, group_rank: null } });
+      tasks.forEach((t) => { if (ids.includes(t.id)) Object.assign(t, { day_of_week: day, group_rank: null }); });
+      suggItems = suggItems.filter((it) => !batch.includes(it));
+    }
+    suggestDialog.close();
+    render();
+    const toSas = creations.filter((it) => !it.day).length;
+    toast([
+      creations.length && `${plural(creations.length, 'tâche')} créée${creations.length > 1 ? 's' : ''}${toSas ? ` (${toSas} dans le sas)` : ''}`,
+      plans.length && `${plural(plans.length, 'tâche')} planifiée${plans.length > 1 ? 's' : ''}`,
+    ].filter(Boolean).join(' · '));
+  } catch (ex) {
+    console.error(ex);
+    render();
+    renderSuggestions();
+    suggestStatus(ex instanceof TypeError ? 'Erreur réseau, réessaie.' : ex.message, { error: true });
+  }
+});
+
+$('#notes-suggest').addEventListener('click', openSuggestions);
+const closeSuggest = () => suggestDialog.close();
+$('#suggest-close').addEventListener('click', closeSuggest);
+$('#suggest-cancel').addEventListener('click', closeSuggest);
+suggestDialog.addEventListener('click', (e) => { if (e.target === suggestDialog) closeSuggest(); });
+
+// ---------- Copier pour Claude (Lot 28) ----------
+// La note, les projets et les tâches sont copiés avec des consignes ; l'utilisateur les colle dans sa conversation
+// Claude (abonnement, sans API), puis recolle la réponse JSON, affichée dans la fenêtre des suggestions.
+const CLAUDE_URL_KEY = 'planning_claude_url';
+const CLAUDE_DEFAULT_URL = 'https://claude.ai/new';
+const claudeDialog = $('#claude-dialog');
+let claudeRefs = null; // codes P…/T… du dernier texte copié
+
+function claudeUrl() {
+  try { return localStorage.getItem(CLAUDE_URL_KEY) || CLAUDE_DEFAULT_URL; } catch { return CLAUDE_DEFAULT_URL; }
+}
+
+async function copyForClaude() {
+  const note = notesText.value.trim();
+  if (!note) return;
+  saveNote();
+  const { text, refs } = claudePrompt(note, weekTitle(noteWeek).toLowerCase(), projects, tasks);
+  claudeRefs = refs;
+  let copied = true;
+  try { await navigator.clipboard.writeText(text); } catch { copied = false; }
+  const status = $('#claude-copied');
+  status.textContent = copied ? '✓ Texte copié dans le presse-papiers.' : 'Copie automatique impossible : utilise « Recopier le texte ».';
+  status.classList.toggle('text-red-700', !copied);
+  status.classList.toggle('text-slate-500', copied);
+  return text;
+}
+
+async function openClaude() {
+  if (!notesText.value.trim()) return;
+  $('#claude-url').value = claudeUrl();
+  $('#claude-open').href = claudeUrl();
+  $('#claude-reply').value = '';
+  $('#claude-error').classList.add('hidden');
+  claudeDialog.showModal();
+  await copyForClaude();
+}
+
+// Lien de la conversation : validé et mémorisé à chaque saisie ; « Ouvrir » suit le dernier lien valide.
+$('#claude-url').addEventListener('input', (e) => {
+  let url = '';
+  try { url = normalizeUrl(e.target.value); } catch { /* lien incomplet pendant la saisie */ }
+  $('#claude-open').href = url || CLAUDE_DEFAULT_URL;
+  try {
+    if (url) localStorage.setItem(CLAUDE_URL_KEY, url);
+    else if (!e.target.value.trim()) localStorage.removeItem(CLAUDE_URL_KEY);
+  } catch { /* stockage indisponible */ }
+});
+
+// Repli si le presse-papiers est refusé : le texte est sélectionné dans la zone de réponse pour Ctrl+C.
+$('#claude-copy').addEventListener('click', async () => {
+  const text = await copyForClaude();
+  if (text && $('#claude-copied').classList.contains('text-red-700')) {
+    const area = $('#claude-reply');
+    area.value = text;
+    area.select();
+    $('#claude-copied').textContent = 'Texte sélectionné ci-dessous : copie-le (Ctrl+C ou ⌘C), puis remplace-le par la réponse de Claude.';
+  }
+});
+
+$('#claude-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const err = $('#claude-error');
+  err.classList.add('hidden');
+  try {
+    const refs = claudeRefs ?? claudePrompt(notesText.value, '', projects, tasks).refs;
+    const raw = parseClaudeReply($('#claude-reply').value, refs);
+    claudeDialog.close();
+    showSuggestions(raw);
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.classList.remove('hidden');
+  }
+});
+
+$('#notes-claude').addEventListener('click', openClaude);
+$('#claude-close').addEventListener('click', () => claudeDialog.close());
+$('#claude-cancel').addEventListener('click', () => claudeDialog.close());
+claudeDialog.addEventListener('click', (e) => { if (e.target === claudeDialog) claudeDialog.close(); });
+
 // Journal des mises à jour + suivi par lot (skill mdui-onboarding-overlays)
 const changelogDialog = $('#changelog');
 const LATEST = CHANGELOG[0].version;
@@ -2862,6 +3349,9 @@ const TOURS = {
       { id: 'add', targetSelector: '#add-form', placement: 'bottom', lot: 'Lot 1',
         title: 'Ajouter une tâche',
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
+      { id: 'notes', targetSelector: '#notes-tab', placement: 'bottom', lot: 'Lot 25',
+        title: 'Bloc-notes de la semaine',
+        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une ; « Copier pour Claude » fait analyser la note dans ta conversation Claude.' },
       { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
         title: 'Étiquettes et réunions',
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },
@@ -2870,7 +3360,7 @@ const TOURS = {
         content: 'Choisis « Chaque semaine » ou « Chaque mois » (ex. le 1ᵉʳ mardi) : « Nouvelle Semaine » recréera la tâche quand il le faut. Une occurrence non faite reste sur son jour. Les séries se retrouvent dans Réglages.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
-        content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée.' },
+        content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée : elle passe sous les tâches à faire.' },
       { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 20',
         title: 'Notes et points à traiter',
         content: 'Écris directement sur une carte (Entrée pour l’ajouter) : c’est une simple note. Active « À traiter » pour créer un point à cocher ; le compteur ambre indique ceux qui restent à traiter. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },
@@ -3033,7 +3523,14 @@ $('#login-form').addEventListener('submit', async (e) => {
   }
 });
 
-$('#logout').addEventListener('click', () => {
+$('#logout').addEventListener('click', async () => {
+  await saveNote(); // en cas d'échec, le brouillon local est renvoyé à la prochaine connexion
+  setNotesOpen(false);
+  notes = [];
+  noteDirty = false;
+  noteWeek = weekKey(new Date());
+  notesText.value = '';
+  noteStatus('');
   saveSession(null);
   tasks = [];
   history = [];
@@ -3047,6 +3544,7 @@ $('#logout').addEventListener('click', () => {
   recurrences = [];
   openComments.clear();
   openWeeks.clear();
+  todoDrafts.clear();
   setAuthed(false);
 });
 
@@ -3061,6 +3559,16 @@ async function start() {
     ]);
     render();
   });
+  // Bloc-notes chargé à part : sans sa table (SQL du Lot 25 pas encore exécuté), le reste de l'application fonctionne.
+  try {
+    notes = await db.listNotes();
+    renderNotes();
+    restoreDraft();
+  } catch (ex) {
+    console.error(ex);
+    renderNotes();
+    noteStatus(noteError(ex), true);
+  }
   if (GOOGLE_CLIENT_ID) loadGis().catch(() => { /* réessayé au clic sur « Google Agenda » */ });
   setTimeout(() => startTour('onboarding-v1'), 400); // une seule fois (état mémorisé)
 }
