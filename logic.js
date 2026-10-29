@@ -920,7 +920,8 @@ ${String(note ?? '').trim()}`;
   // ---- Liste des clients (Lot 30) ----
   // Une carte par client : mêmes calculs que la fiche (clientOverview), plus l'année du dernier projet terminé.
   // `query` : nom ou site, accents et casse ignorés. `filter` : 'actifs' (au moins un projet en cours) | 'inactifs' | 'tous'.
-  // `sort` : 'nom' | 'depasses' (estimés dépassés d'abord) | 'temps' (temps passé des projets en cours) | 'semaine' (tâches de la semaine).
+  // `sort` : 'nom' | 'depasses' (estimés dépassés d'abord) | 'temps' (temps passé des projets en cours) | 'semaine' (tâches de la semaine)
+  // | 'creation' (date de création de la fiche, la plus récente d'abord).
   // Les compteurs des filtres suivent la recherche, pas le filtre.
   function clientCards(clients, projects, tasks, history, { query = '', filter = 'actifs', sort = 'nom' } = {}) {
     const q = normalizeText(query);
@@ -942,6 +943,7 @@ ${String(note ?? '').trim()}`;
       depasses: (a, b) => b.overCount - a.overCount || byName(a, b),
       temps: (a, b) => b.spent - a.spent || byName(a, b),
       semaine: (a, b) => b.week - a.week || b.weekHours - a.weekHours || byName(a, b),
+      creation: (a, b) => (Date.parse(b.client.created_at) || 0) - (Date.parse(a.client.created_at) || 0) || byName(a, b),
     }[sort] || byName;
     const cards = found
       .filter((c) => filter === 'tous' || (filter === 'inactifs' ? c.open === 0 : c.open > 0))

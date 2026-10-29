@@ -31,7 +31,7 @@ const CHANGELOG = [
   {
     version: '1.30.0', type: 'mineure', lot: 'Lot 30', date: '2026-10-29',
     items: [
-      'Liste des clients : recherche par nom ou site, filtre Actifs / Inactifs / Tous (Actifs par défaut) et tri par nom, dépassés d’abord, temps passé ou charge de la semaine.',
+      'Liste des clients : recherche par nom ou site, filtre Actifs / Inactifs / Tous (Actifs par défaut) et tri par nom, dépassés d’abord, temps passé, charge de la semaine ou date de création (récents d’abord).',
       'Chaque carte client affiche ses projets en cours, ses tâches de la semaine, le temps passé sur l’estimé avec une barre (ambre au-delà de l’estimé) et une pastille « dépassé ».',
       'Un client sans projet en cours est atténué et indique l’année de son dernier projet terminé.',
     ],

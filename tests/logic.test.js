@@ -1543,8 +1543,8 @@ describe('fiche client (lot 29)', () => {
 });
 
 describe('liste des clients (lot 30)', () => {
-  const cl = (id, name, website = null) => ({ id, name, website });
-  const clients = [cl('c1', 'Maison Lumen', 'https://maisonlumen.fr'), cl('c2', 'Café Mélia'), cl('c3', 'Globex', 'https://globex.com'), cl('c4', 'Zeta')];
+  const cl = (id, name, website = null, created_at = null) => ({ id, name, website, created_at });
+  const clients = [cl('c1', 'Maison Lumen', 'https://maisonlumen.fr', '2024-03-01T00:00:00Z'), cl('c2', 'Café Mélia', null, '2026-01-10T00:00:00Z'), cl('c3', 'Globex', 'https://globex.com', '2025-06-15T00:00:00Z'), cl('c4', 'Zeta')];
   const pr = (id, cid, extra = {}) => ({ id, name: id, client_id: cid, status: 'en_cours', year: 2026, estimated_hours: null, clients: { id: cid, name: cid }, ...extra });
   const projects = [
     pr('a', 'c1', { estimated_hours: 10 }), pr('b', 'c1'),
@@ -1582,6 +1582,7 @@ describe('liste des clients (lot 30)', () => {
     assert.deepEqual(names(run({ ...f, sort: 'depasses' })), ['Maison Lumen', 'Café Mélia', 'Globex', 'Zeta']);
     assert.deepEqual(names(run({ ...f, sort: 'temps' })), ['Maison Lumen', 'Globex', 'Café Mélia', 'Zeta']);
     assert.deepEqual(names(run({ ...f, sort: 'semaine' })), ['Globex', 'Maison Lumen', 'Café Mélia', 'Zeta']);
+    assert.deepEqual(names(run({ ...f, sort: 'creation' })), ['Café Mélia', 'Globex', 'Maison Lumen', 'Zeta']); // récents d’abord, sans date en dernier
     assert.deepEqual(names(run({ ...f, sort: 'inconnu' })), ['Café Mélia', 'Globex', 'Maison Lumen', 'Zeta']);
   });
 
