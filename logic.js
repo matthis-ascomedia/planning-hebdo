@@ -979,6 +979,19 @@ ${String(note ?? '').trim()}`;
     };
   }
 
+  // ---- Sas d'attente (Lot 32) ----
+  // Résumé d'un client dans le sas : projets en attente, tâches rangées et leurs heures.
+  function sasSummary(projects, tasks) {
+    const parked = projects.flatMap((p) => parkedTasks(tasks, p.id));
+    return { projects: projects.length, parked: parked.length, hours: sumHours(parked) };
+  }
+
+  // Tâches rangées affichées dans la carte d'un projet : les `max` premières, sauf si la carte est dépliée.
+  function parkedVisible(list, expanded = false, max = 3) {
+    if (expanded || list.length <= max) return { shown: list, more: 0 };
+    return { shown: list.slice(0, max), more: list.length - max };
+  }
+
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
@@ -989,6 +1002,6 @@ ${String(note ?? '').trim()}`;
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
-    initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview,
+    initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview, sasSummary, parkedVisible,
     weekSnapshot, weekPeriods, weekTasks };
 }));
