@@ -13,7 +13,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
-  initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview,
+  initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter,
   weekSnapshot, weekPeriods, weekTasks } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
@@ -28,6 +28,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.30.0', type: 'mineure', lot: 'Lot 30', date: '2026-10-29',
+    items: [
+      'Liste des clients : recherche par nom ou site, filtre Actifs / Inactifs / Tous (Actifs par défaut) et tri par nom, dépassés d’abord, temps passé ou charge de la semaine.',
+      'Chaque carte client affiche ses projets en cours, ses tâches de la semaine, le temps passé sur l’estimé avec une barre (ambre au-delà de l’estimé) et une pastille « dépassé ».',
+      'Un client sans projet en cours est atténué et indique l’année de son dernier projet terminé.',
+    ],
+  },
   {
     version: '1.29.0', type: 'mineure', lot: 'Lot 29', date: '2026-10-29',
     items: [
@@ -2200,6 +2208,44 @@ const logoHTML = (c, size) => c.logo
   : `<span class="${size} rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-xs font-semibold text-slate-400">${initials(c.name)}</span>`;
 const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
 
+// Liste : recherche, filtre (Actifs par défaut, Tous s'il n'y a aucun client actif) et tri, conservés en mémoire.
+const CLIENTS_LIST_FILTERS = [['actifs', 'Actifs'], ['inactifs', 'Inactifs'], ['tous', 'Tous']];
+const clientsList = { query: '', filter: null, sort: 'nom' };
+
+function clientCardHTML(k) {
+  const c = k.client;
+  const inactive = k.open === 0;
+  const projets = !k.total ? 'Aucun projet' : `${k.open ? `${k.open} en cours` : 'Aucun en cours'} · ${plural(k.total, 'projet')}`;
+  const semaine = k.week ? plural(k.week, 'tâche') : 'Aucune tâche';
+  const over = k.overCount > 0;
+  let time;
+  if (inactive) time = `<span class="block text-xs text-slate-400">${k.lastDoneYear ? `Dernier projet terminé en ${k.lastDoneYear}` : '—'}</span>`;
+  else if (k.estimated > 0) {
+    const pct = Math.min(100, k.pct ?? 0);
+    time = `<span class="block text-xs tabular-nums ${over ? 'font-medium text-amber-700' : 'text-slate-500'}">${fmtH(k.spent)} / ${fmtH(k.estimated)}</span>
+      <span class="mt-1 block h-1 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"
+        aria-label="Temps passé sur l’estimé des projets en cours"><span class="block h-full rounded-full ${over ? 'bg-amber-500' : 'bg-slate-900'}" style="width:${pct}%"></span></span>`;
+  } else time = `<span class="block text-xs text-slate-500 tabular-nums">${k.spent ? `${fmtH(k.spent)} · sans estimé` : '—'}</span>`;
+  return `
+      <li class="flex">
+        <a href="#clients/${c.id}" class="flex-1 min-w-0 flex flex-col gap-3 border border-slate-200 rounded-xl p-4 hover:border-slate-300 transition ${inactive ? 'bg-slate-50' : 'bg-white shadow-sm'}">
+          <span class="flex items-center gap-3">
+            <span class="${inactive ? 'opacity-60' : ''}">${logoHTML(c, 'w-12 h-12 shrink-0')}</span>
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm font-medium truncate ${inactive ? 'text-slate-500' : ''}">${esc(c.name)}</span>
+              <span class="block text-xs text-slate-500 truncate">${c.website ? esc(hostOf(c.website)) : 'Pas de site web'}</span>
+            </span>
+            ${over ? `<span class="shrink-0 text-[11px] font-medium rounded px-1.5 py-0.5 bg-amber-50 text-amber-700" title="Projets dont l’estimé est dépassé">${k.overCount} dépassé${k.overCount > 1 ? 's' : ''}</span>` : ''}
+          </span>
+          <span class="flex items-center justify-between gap-2 text-xs">
+            <span class="text-slate-500">${projets}</span>
+            <span class="${k.week && !inactive ? 'font-medium text-slate-700' : 'text-slate-400'}" title="Tâches planifiées cette semaine">${semaine}</span>
+          </span>
+          <span class="block">${time}</span>
+        </a>
+      </li>`;
+}
+
 function renderClients() {
   const id = currentRoute() === 'clients' ? routeParam(location.hash) : '';
   const client = clients.find((c) => c.id === id);
@@ -2208,23 +2254,29 @@ function renderClients() {
   $('#clients-count').textContent = clients.length;
   if (client) return renderClientPage(client);
   $('#client-edit-form').dataset.id = '';
-  const list = clients.map((c) => {
-    const ps = projects.filter((p) => p.client_id === c.id);
-    const open = ps.filter((p) => p.status === 'en_cours').length;
-    return `
-      <li>
-        <a href="#clients/${c.id}" class="flex items-center gap-3 bg-white border border-slate-200 rounded-xl p-3 shadow-sm hover:border-slate-300 transition">
-          ${logoHTML(c, 'w-12 h-12 shrink-0')}
-          <span class="min-w-0 flex-1">
-            <span class="block text-sm font-medium truncate">${esc(c.name)}</span>
-            <span class="block text-xs text-slate-500 truncate">${c.website ? esc(hostOf(c.website)) : 'Pas de site web'}</span>
-            <span class="block text-xs text-slate-500">${ps.length} projet${ps.length > 1 ? 's' : ''}${open ? ` · ${open} en cours` : ''}</span>
-          </span>
-        </a>
-      </li>`;
-  });
-  $('#clients-grid').innerHTML = list.join('') || '<li class="text-sm text-slate-400">Aucun client pour le moment.</li>';
+  const list = clientsList;
+  const probe = clientCards(clients, projects, tasks, history, { query: list.query, filter: 'tous' });
+  const filter = list.filter ?? defaultClientFilter(probe.counts);
+  const { cards, counts } = clientCards(clients, projects, tasks, history, { query: list.query, filter, sort: list.sort });
+  $('#clients-filter').innerHTML = CLIENTS_LIST_FILTERS.map(([key, label]) => `
+    <button type="button" data-clients-filter="${key}" aria-pressed="${filter === key}"
+      class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 aria-[pressed=true]:bg-slate-900 aria-[pressed=true]:text-white transition">${label} · ${counts[key]}</button>`).join('');
+  $('#clients-sort').value = list.sort;
+  $('#clients-result').textContent = list.query || filter !== 'tous' ? plural(cards.length, 'client') : '';
+  $('#clients-grid').innerHTML = cards.map(clientCardHTML).join('')
+    || `<li class="text-sm text-slate-400 sm:col-span-2 xl:col-span-3">${clients.length ? `Aucun client ne correspond.${list.query || filter !== 'tous' ? ' <button type="button" data-clients-reset class="underline hover:text-slate-900">Tout afficher</button>' : ''}` : 'Aucun client pour le moment.'}</li>`;
 }
+
+$('#clients-search').addEventListener('input', (e) => { clientsList.query = e.target.value; renderClients(); });
+$('#clients-sort').addEventListener('change', (e) => { clientsList.sort = e.target.value; renderClients(); });
+$('#clients-index').addEventListener('click', (e) => {
+  const key = e.target.closest('[data-clients-filter]')?.dataset.clientsFilter;
+  if (key) { clientsList.filter = key; return renderClients(); }
+  if (e.target.closest('[data-clients-reset]')) {
+    clientsList.query = ''; clientsList.filter = 'tous'; $('#clients-search').value = '';
+    renderClients();
+  }
+});
 
 const CLIENT_FILTERS = [['en_cours', 'En cours'], ['termine', 'Terminés'], ['tous', 'Tous']];
 let clientFilter = 'en_cours'; // filtre de la liste des projets de la fiche
@@ -3703,6 +3755,7 @@ $('#logout').addEventListener('click', async () => {
   history = [];
   projects = [];
   clients = [];
+  clientsList.query = ''; clientsList.filter = null; clientsList.sort = 'nom'; $('#clients-search').value = '';
   links = [];
   comments = [];
   weeks = [];
