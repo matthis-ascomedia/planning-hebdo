@@ -13,7 +13,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
-  initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter,
+  initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview,
   weekSnapshot, weekPeriods, weekTasks } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
@@ -28,6 +28,16 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.31.0', type: 'mineure', lot: 'Lot 31', date: '2026-10-29',
+    items: [
+      'Page projet dédiée : un clic sur un projet (planning, sas, archives, fiche client, recherche) ouvre sa page avec en-tête, liens rapides, quatre indicateurs et ses tâches.',
+      'Tâches regroupées en À faire, Terminées et Historique (avec « Afficher les autres »), commentaires visibles et à traiter sous chaque tâche.',
+      'Indicateurs : tâches à faire / terminées, temps planifié, temps passé sur l’estimé (barre) et reste sur l’estimé, qui passe en ambre « +X h » au-delà.',
+      'La fenêtre du projet devient « Modifier le projet » (identité, estimation et devis, accès rapide) avec un bouton « Voir la fiche projet ».',
+      'Carte du sas : bouton Ouvrir, liens rapides, tâches rangées et heures. Archives : type, année, temps passé sur estimé et bouton Ouvrir.',
+    ],
+  },
   {
     version: '1.30.0', type: 'mineure', lot: 'Lot 30', date: '2026-10-29',
     items: [
@@ -582,7 +592,8 @@ function taskBodyHTML(t, origin) {
   const done = t.is_completed;
   const main = primaryLabel(t, labels);
   return `
-      ${origin ? `<p class="text-xs text-slate-500 truncate mb-1 pr-16" title="${esc(origin)}">${esc(origin)}</p>` : ''}
+      ${origin ? `<p class="text-xs text-slate-500 truncate mb-1 pr-16" title="${esc(origin)}">${t.project_id
+        ? `<a href="#projets/${t.project_id}" draggable="false" class="hover:underline" data-lot="Lot 31">${esc(origin)}</a>` : esc(origin)}</p>` : ''}
       ${isMeeting(t, labels) ? `
       <div class="flex items-center gap-2 mb-1.5" data-lot="Lot 14">
         <span class="text-base font-semibold tabular-nums ${tint(main).text}">${esc(t.start_time || '--:--')}</span>
@@ -753,6 +764,7 @@ function render() {
   renderArchives();
   renderHistory();
   renderClients();
+  renderProjectPage();
   renderSettings();
   $('#clients-list').innerHTML = clients.map((c) => `<option value="${esc(c.name)}"></option>`).join('');
   fillProjectList($('#add-form').client_name.value);
@@ -798,7 +810,7 @@ function folderHTML(p, { showClient }) {
     <li class="folder bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing" data-lot="Lot 3"
         draggable="true" data-folder="${p.id}">
       <div class="flex items-start gap-1">
-        <button class="min-w-0 flex-1 flex items-center gap-2 text-left" data-open="${p.id}" title="Détail du projet">
+        <button class="min-w-0 flex-1 flex items-center gap-2 text-left" data-open="${p.id}" title="Ouvrir la page du projet">
           ${showClient ? logoHTML(clients.find((c) => c.id === p.client_id) || p.clients, 'w-8 h-8 shrink-0') : ''}
           <span class="min-w-0 flex-1" data-lot="Lot 17">
             ${[showClient && p.clients.name, p.type].filter(Boolean).length
@@ -807,10 +819,13 @@ function folderHTML(p, { showClient }) {
           </span>
         </button>
         ${projectPendingHTML(p)}
+        <button class="text-xs text-slate-500 hover:text-slate-900 px-1.5 py-1 rounded transition" data-open="${p.id}" data-lot="Lot 31"
+                title="Ouvrir la page du projet">Ouvrir</button>
         <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"
                 title="Archiver le projet (terminé)">Archiver</button>
       </div>
-      ${budgetHTML(p)}
+      ${linksOf(p, links).length ? `<div class="mt-1.5 flex flex-wrap gap-1" data-lot="Lot 31">${linksOf(p, links).map(clientLinkChip).join('')}</div>` : ''}
+      ${budgetHTML(p, list)}
       <div class="mt-2 flex flex-col gap-1.5">
         ${list.length ? list.map(parkedHTML).join('') : '<p class="text-xs text-slate-400">Aucune tâche rangée.</p>'}
       </div>
@@ -818,14 +833,16 @@ function folderHTML(p, { showClient }) {
 }
 
 // Temps effectif / estimé d'un projet du sas : « 12 h / 40 h » et une fine barre (ambre au-delà de l'estimé).
-function budgetHTML(p) {
+function budgetHTML(p, list = []) {
   const spent = projectTime(tasks, history, p.id).spent;
   const b = budgetStatus(p.estimated_hours, spent);
-  if (!b) return spent ? `<p class="mt-1.5 text-[11px] text-slate-500 tabular-nums" data-lot="Lot 22" title="Temps effectif (aucun estimé renseigné)">${fmtH(spent)}</p>` : '';
+  const parkedHours = list.reduce((sum, t) => sum + (+t.estimated_hours || 0), 0);
+  const parked = list.length ? `<span class="text-slate-400" data-lot="Lot 31">${plural(list.length, 'tâche')} rangée${list.length > 1 ? 's' : ''} · ${fmtH(parkedHours)}</span>` : '';
+  if (!b) return spent || parked ? `<p class="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-slate-500 tabular-nums" data-lot="Lot 22" title="Temps effectif (aucun estimé renseigné)"><span>${spent ? fmtH(spent) : ''}</span>${parked}</p>` : '';
   const tone = b.over ? 'bg-amber-500' : 'bg-slate-900';
   return `
       <div class="mt-1.5" data-lot="Lot 22" title="Temps effectif / temps estimé${b.over ? ' : estimé dépassé' : ''}">
-        <p class="text-[11px] tabular-nums ${b.over ? 'font-medium text-amber-700' : 'text-slate-500'}">${fmtH(b.spent)} / ${fmtH(b.estimated)}</p>
+        <p class="flex items-center justify-between gap-2 text-[11px] tabular-nums ${b.over ? 'font-medium text-amber-700' : 'text-slate-500'}"><span>${fmtH(b.spent)} / ${fmtH(b.estimated)}</span>${parked}</p>
         <div class="mt-0.5 h-1 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${b.pct}"
              aria-label="Avancement du temps effectif sur l’estimé"><div class="h-full rounded-full ${tone}" style="width:${b.pct}%"></div></div>
       </div>`;
@@ -892,7 +909,7 @@ function openResult(target) {
   $('#sas-search').value = '';
   renderWaiting();
   if (clientId) location.hash = `#clients/${clientId}`;
-  else openProject(projectId);
+  else goProject(projectId);
   return true;
 }
 
@@ -937,15 +954,27 @@ function renderArchives() {
           <h4 class="text-sm font-semibold mb-2">${esc(client)}</h4>
           <ul class="flex flex-col gap-2">
             ${list.map((p) => {
-              const n = tasks.concat(history).filter((t) => t.project_id === p.id).length;
+              const o = projectOverview(p, tasks, history);
+              const sub = [p.type, p.year, plural(o.count, 'tâche')].filter(Boolean).join(' · ');
               return `
-              <li class="flex items-center gap-3 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
-                <span class="min-w-0 flex-1 text-sm font-medium truncate">${esc(p.name)}</span>
-                <span class="text-xs text-slate-500">${n} tâche${n > 1 ? 's' : ''}</span>
-                <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
-                        data-reopen="${p.id}">Rouvrir</button>
-                <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
-                        data-delete-project="${p.id}" title="Supprimer définitivement le projet et ses tâches" aria-label="Supprimer définitivement le projet ${esc(p.name)}">Supprimer</button>
+              <li class="flex flex-wrap items-center gap-x-4 gap-y-2 bg-white border border-slate-200 rounded-lg px-3 py-3 shadow-sm">
+                <span class="min-w-0 flex-1 basis-48">
+                  <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
+                  <span class="block text-xs text-slate-500 truncate" data-lot="Lot 31">${esc(sub)}</span>
+                </span>
+                <span class="w-28 shrink-0" data-lot="Lot 31">${o.estimated !== null
+                  ? `<span class="block text-xs tabular-nums text-slate-500">${fmtH(o.spent)} / ${fmtH(o.estimated)}</span>
+                     <span class="mt-1 block h-1 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${o.pct}"
+                       aria-label="Temps passé sur l’estimé"><span class="block h-full rounded-full ${o.over ? 'bg-amber-500' : 'bg-slate-300'}" style="width:${o.pct}%"></span></span>`
+                  : `<span class="block text-xs tabular-nums text-slate-400">${o.spent ? `${fmtH(o.spent)} · sans estimé` : '—'}</span>`}</span>
+                <span class="ml-auto flex shrink-0 items-center gap-1.5">
+                  <button class="text-sm px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition" data-lot="Lot 31"
+                          data-open-project="${p.id}" title="Ouvrir la page du projet">Ouvrir</button>
+                  <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition"
+                          data-reopen="${p.id}">Rouvrir</button>
+                  <button class="text-sm font-medium px-3 py-1.5 rounded-lg border border-transparent text-slate-500 hover:text-red-700 hover:bg-red-50 transition" data-lot="Lot 24"
+                          data-delete-project="${p.id}" title="Supprimer définitivement le projet et ses tâches" aria-label="Supprimer définitivement le projet ${esc(p.name)}">Supprimer</button>
+                </span>
               </li>`;
             }).join('')}
           </ul>
@@ -986,18 +1015,23 @@ function renderArchives() {
 }
 
 // Navigation par onglets (hash) : une vue #<nom>-view par onglet.
-const ROUTES = ['planning', 'history', 'clients', 'archives', 'settings'];
+const ROUTES = ['planning', 'history', 'clients', 'projets', 'archives', 'settings'];
+const TAB_OF = { projets: 'clients' }; // la page projet n'a pas d'onglet : elle reste sous « Clients »
 const currentRoute = () => routeOf(location.hash, ROUTES);
 
 function route() {
   const active = currentRoute();
+  const tabName = TAB_OF[active] ?? active;
   ROUTES.forEach((name) => {
     $(`#${name}-view`).classList.toggle('hidden', name !== active);
     const tab = $(`#tab-${name}`);
-    if (name === active) tab.setAttribute('aria-current', 'page');
+    if (!tab) return;
+    if (name === tabName) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   });
   renderClients();
+  renderProjectPage();
+  if (active === 'projets') window.scrollTo({ top: 0 });
 }
 window.addEventListener('hashchange', route);
 
@@ -1178,16 +1212,14 @@ function toggleComment(id, done) {
   const prev = c.is_done;
   c.is_done = done;
   render();
-  refreshProjectDialog();
-  run(() => api('task_comments', `?id=eq.${id}`, { method: 'PATCH', body: { is_done: done } }), () => { c.is_done = prev; refreshProjectDialog(); });
+  run(() => api('task_comments', `?id=eq.${id}`, { method: 'PATCH', body: { is_done: done } }), () => { c.is_done = prev; });
 }
 
 function deleteComment(id) {
   const snapshot = comments;
   comments = comments.filter((x) => x.id !== id);
   render();
-  refreshProjectDialog();
-  run(() => api('task_comments', `?id=eq.${id}`, { method: 'DELETE' }), () => { comments = snapshot; refreshProjectDialog(); });
+  run(() => api('task_comments', `?id=eq.${id}`, { method: 'DELETE' }), () => { comments = snapshot; });
 }
 
 // Transforme un commentaire en note ou en point à traiter (repart non traité).
@@ -1198,8 +1230,7 @@ function setCommentKind(id) {
   const patch = commentKindPatch(!c.is_note);
   Object.assign(c, patch);
   render();
-  refreshProjectDialog();
-  run(() => api('task_comments', `?id=eq.${id}`, { method: 'PATCH', body: patch }), () => { Object.assign(c, prev); refreshProjectDialog(); });
+  run(() => api('task_comments', `?id=eq.${id}`, { method: 'PATCH', body: patch }), () => { Object.assign(c, prev); });
 }
 
 // Suppression et changement de nature d'un commentaire (fiches projet et historique).
@@ -1833,7 +1864,7 @@ $('#waiting').addEventListener('click', (e) => {
   const openId = e.target.closest('[data-open]')?.dataset.open;
   const finishId = e.target.closest('[data-finish]')?.dataset.finish;
   if (openId) {
-    openProject(openId);
+    goProject(openId);
   } else if (finishId) {
     finishProject(finishId);
   }
@@ -1861,51 +1892,24 @@ async function finishProject(finishId) {
 const projectDialog = $('#project-dialog');
 const projectEditForm = $('#project-edit-form');
 
-function openProject(id, { keepForm = false } = {}) {
+function goProject(id) { location.hash = `#projets/${id}`; }
+
+// Édition rapide : nom, année, type, estimé, devis et liens d'accès rapide.
+function editProject(id) {
   const p = projects.find((x) => x.id === id);
   if (!p) return;
   projectEditForm.dataset.id = id;
-  if (!keepForm) {
-    projectEditForm.project_name.value = p.name;
-    projectEditForm.year.value = p.year ?? '';
-    projectEditForm.type.value = p.type ?? '';
-    projectEditForm.estimated_hours.value = p.estimated_hours ?? '';
-    fillTypeList();
-    projectEditForm.quote_label.value = p.quote_label ?? '';
-    projectEditForm.quote_url.value = p.quote_url ?? '';
-    $('#project-error').classList.add('hidden');
-  }
+  projectEditForm.project_name.value = p.name;
+  projectEditForm.year.value = p.year ?? '';
+  projectEditForm.type.value = p.type ?? '';
+  projectEditForm.estimated_hours.value = p.estimated_hours ?? '';
+  fillTypeList();
+  projectEditForm.quote_label.value = p.quote_label ?? '';
+  projectEditForm.quote_url.value = p.quote_url ?? '';
+  $('#project-error').classList.add('hidden');
   $('#project-client').textContent = p.clients.name;
+  $('#project-view').classList.toggle('hidden', currentRoute() === 'projets' && routeParam(location.hash) === id); // déjà sur la fiche
   renderProjectLinks(p);
-  const current = tasks.filter((t) => t.project_id === id);
-  const past = history.filter((t) => t.project_id === id);
-  const time = projectTime(tasks, history, id);
-  $('#project-stats').innerHTML = `
-    <div><dt class="text-xs text-slate-500">Tâches</dt><dd class="text-sm font-semibold">${time.count}</dd></div>
-    <div data-lot="Lot 22"><dt class="text-xs text-slate-500">Planifié</dt><dd class="text-sm font-semibold">${fmtH(time.planned)}</dd></div>
-    <div data-lot="Lot 22"><dt class="text-xs text-slate-500">Estimé</dt><dd class="text-sm font-semibold">${p.estimated_hours == null ? '—' : fmtH(p.estimated_hours)}</dd></div>
-    <div data-lot="Lot 22"><dt class="text-xs text-slate-500">Effectif</dt><dd class="text-sm font-semibold ${budgetStatus(p.estimated_hours, time.spent)?.over ? 'text-amber-700' : ''}">${fmtH(time.spent)}</dd></div>`;
-  const row = (t, status) => {
-    const list = taskComments(t.id);
-    return `
-    <li class="py-1.5 border-b border-slate-100 last:border-0">
-      <div class="flex items-center gap-2 text-sm">
-        <span class="min-w-0 flex-1 truncate ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}</span>
-        ${labelChipsHTML(t)}
-        <span class="text-xs text-slate-500">${esc(status)}</span>
-        ${hoursHTML(t)}
-      </div>
-      ${list.length ? `<ul class="mt-1 pl-3 space-y-1" data-lot="Lot 10">${list.map(commentHTML).join('')}</ul>` : ''}
-    </li>`;
-  };
-  const date = (t) => new Date(t.archived_at).toLocaleDateString('fr-FR');
-  $('#project-tasks').innerHTML = (current.length || past.length)
-    ? current.map((t) => row(t, t.is_completed ? 'Terminée' : t.day_of_week || 'Sas')).join('')
-      + (past.length
-        ? `<li class="pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500" data-lot="Lot 4">Historique</li>`
-          + past.map((t) => row(t, `Terminée · ${date(t)}`)).join('')
-        : '')
-    : '<li class="text-sm text-slate-400 py-1">Aucune tâche rattachée.</li>';
   if (!projectDialog.open) projectDialog.showModal();
 }
 
@@ -1914,25 +1918,126 @@ const hoursHTML = (t) => `<span class="shrink-0 text-xs font-medium tabular-nums
   ? ` <span class="${+t.actual_hours > +t.estimated_hours ? 'text-amber-700' : 'text-slate-500'}" title="Temps passé" data-lot="Lot 22">→ ${fmtH(t.actual_hours)}</span>` : ''}</span>`;
 
 projectDialog.addEventListener('click', (e) => { if (e.target === projectDialog) projectDialog.close(); });
+$('#project-close').addEventListener('click', () => projectDialog.close());
+$('#project-view').addEventListener('click', () => {
+  const id = projectEditForm.dataset.id;
+  projectDialog.close();
+  goProject(id);
+});
 
-// Rafraîchit la liste des tâches du détail projet ouvert (commentaires cochés / supprimés).
-function refreshProjectDialog() {
-  if (!projectDialog.open) return;
-  const scroll = $('#project-tasks').scrollTop;
-  openProject(projectEditForm.dataset.id, { keepForm: true });
-  $('#project-tasks').scrollTop = scroll;
+// ---------- Page projet (#projets/<id>) ----------
+const PAST_VISIBLE = 5;
+let ppFor = ''; // projet affiché : en changer replie l'historique
+let ppShowPast = false;
+const currentProjectId = () => (currentRoute() === 'projets' ? routeParam(location.hash) : '');
+
+function ppTaskHTML(t, detail) {
+  const list = taskComments(t.id);
+  const done = t.is_completed;
+  return `
+    <li class="py-2 border-t border-slate-100 first:border-0">
+      <div class="flex items-start gap-2.5">
+        <input type="checkbox" class="chk mt-0.5" ${done ? 'checked' : ''} disabled aria-label="${done ? 'Terminée' : 'À faire'}" title="Se coche dans le Planning" />
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm ${done ? 'text-slate-400 line-through' : ''}">${esc(t.task_name)}</span>
+          ${labelChipsHTML(t) ? `<span class="mt-0.5 flex flex-wrap gap-1">${labelChipsHTML(t)}</span>` : ''}
+          <span class="block text-xs text-slate-500">${esc(detail)}</span>
+        </span>
+        ${hoursHTML(t)}
+      </div>
+      ${list.length ? `<ul class="mt-1 pl-[26px] space-y-1" data-lot="Lot 20">${list.map(commentHTML).join('')}</ul>` : ''}
+    </li>`;
 }
 
-$('#project-tasks').addEventListener('change', (e) => {
+function ppGroupHTML(title, count, note, items, footer = '') {
+  return `
+    <section>
+      <h4 class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">${title}
+        <span class="font-medium text-slate-400 tabular-nums">${count}</span>
+        ${note ? `<span class="font-normal normal-case tracking-normal text-slate-400">${note}</span>` : ''}</h4>
+      <ul class="mt-1">${items.join('')}</ul>${footer}
+    </section>`;
+}
+
+function renderProjectPage() {
+  const onPage = currentRoute() === 'projets';
+  const p = projects.find((x) => x.id === currentProjectId());
+  $('#project-page').classList.toggle('hidden', !p);
+  $('#pp-missing').classList.toggle('hidden', !(onPage && !p && projects.length));
+  if (!p) return;
+  if (ppFor !== p.id) { ppFor = p.id; ppShowPast = false; }
+  const o = projectOverview(p, tasks, history);
+  const done = p.status === 'termine';
+
+  $('#pp-back').href = `#clients/${p.client_id}`;
+  $('#pp-back').textContent = `← ${p.clients.name}`;
+  $('#pp-title').textContent = p.name;
+  const status = $('#pp-status');
+  status.textContent = done ? 'Terminé' : o.over ? 'Estimé dépassé' : 'En cours';
+  status.className = `text-[11px] font-medium rounded px-1.5 py-0.5 ${done ? 'bg-slate-100 text-slate-600' : o.over ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`;
+  $('#pp-meta').textContent = [p.clients.name, p.type, p.year].filter(Boolean).join(' · ');
+  const ls = linksOf(p, links);
+  $('#pp-links').innerHTML = ls.map(clientLinkChip).join('');
+  $('#pp-archive').textContent = done ? 'Rouvrir' : 'Archiver';
+
+  $('#pp-stats').innerHTML = [
+    statTile('Tâches', String(o.count), o.count ? `${o.todo} à faire · ${plural(o.done, 'terminée')}` : 'aucune tâche'),
+    statTile('Planifié', fmtH(o.planned), o.count ? `réparti sur ${plural(o.count, 'tâche')}` : 'rien de planifié'),
+    statTile('Temps passé', fmtH(o.spent), o.estimated !== null ? `sur ${fmtH(o.estimated)} estimées · ${Math.round((o.spent / o.estimated) * 100)} %` : 'aucun estimé renseigné',
+      { bar: o.estimated !== null ? o.pct : null }),
+    o.estimated === null ? statTile('Reste sur l’estimé', '—', 'aucun estimé renseigné')
+      : o.over ? statTile('Estimé dépassé', `+${fmtH(o.excess)}`, 'au-delà de l’estimé', { alert: true })
+        : statTile('Reste sur l’estimé', fmtH(o.remaining), 'estimé − temps passé'),
+  ].join('');
+
+  $('#pp-count').textContent = o.count;
+  const g = o.groups;
+  const past = ppShowPast ? g.past : g.past.slice(0, PAST_VISIBLE);
+  const hidden = g.past.length - PAST_VISIBLE;
+  $('#pp-tasks').innerHTML = [
+    g.todo.length ? ppGroupHTML('À faire', g.todo.length, '', g.todo.map((t) => ppTaskHTML(t, t.day_of_week || 'Sas'))) : '',
+    g.done.length ? ppGroupHTML('Terminées', g.done.length, 'dans le planning', g.done.map((t) => ppTaskHTML(t, t.day_of_week || 'Sas'))) : '',
+    g.past.length ? ppGroupHTML('Historique', g.past.length, 'archivées', past.map((t) => ppTaskHTML(t, fmtDate(t.archived_at, SHORT_DATE))),
+      hidden > 0 ? `<div class="pt-2 border-t border-slate-100"><button type="button" data-pp-past class="text-xs text-slate-500 hover:text-slate-900 px-1 py-1 transition">${ppShowPast ? 'Réduire l’historique' : `Afficher les ${hidden} autres`}</button></div>` : '') : '',
+  ].join('') || '<p class="text-sm text-slate-400">Aucune tâche rattachée.</p>';
+
+  $('#pp-quick').innerHTML = ls.map((l) => `
+    <li class="flex items-center gap-2 py-1.5 border-t border-slate-100 first:border-0">
+      ${clientLinkChip(l)}
+      <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" class="min-w-0 flex-1 truncate text-xs text-slate-500 hover:text-slate-900 transition">${esc(hostOf(l.url))}</a>
+      <span aria-hidden="true" class="text-xs text-slate-400">↗</span>
+    </li>`).join('') || '<li class="py-1.5 text-sm text-slate-400">Aucun lien pour le moment.</li>';
+
+  const row = (k, v) => `<div class="flex items-center justify-between gap-3 py-1"><dt class="text-xs text-slate-500">${k}</dt><dd class="min-w-0 truncate text-right text-sm font-medium">${v}</dd></div>`;
+  $('#pp-info').innerHTML = [
+    row('Client', `<a href="#clients/${p.client_id}" class="hover:underline">${esc(p.clients.name)}</a>`),
+    row('Type', p.type ? esc(p.type) : '—'),
+    row('Année', p.year ?? '—'),
+    row('Temps estimé', p.estimated_hours == null ? '—' : fmtH(p.estimated_hours)),
+    row('Devis', p.quote_url ? `<a href="${esc(p.quote_url)}" target="_blank" rel="noopener noreferrer" class="hover:underline">${esc(p.quote_label || 'Devis')}</a>` : '—'),
+  ].join('');
+}
+
+$('#pp-edit').addEventListener('click', () => editProject(currentProjectId()));
+$('#pp-add-link').addEventListener('click', () => { editProject(currentProjectId()); $('#link-form').label.focus(); });
+$('#pp-add').addEventListener('click', () => {
+  const p = projects.find((x) => x.id === currentProjectId());
+  if (!p) return;
+  window.addEventListener('hashchange', () => prefillAdd(p), { once: true }); // le planning est affiché quand la saisie est préremplie
+  location.hash = '#planning';
+});
+$('#pp-archive').addEventListener('click', () => {
+  const p = projects.find((x) => x.id === currentProjectId());
+  if (!p) return;
+  if (p.status === 'termine') reopenProject(p.id); else finishProject(p.id);
+});
+$('#projets-view').addEventListener('change', (e) => {
   const id = e.target.dataset.commentToggle;
   if (id) toggleComment(id, e.target.checked);
 });
-$('#project-tasks').addEventListener('click', onCommentEdit);
-$('#project-close').addEventListener('click', () => projectDialog.close());
-$('#project-plan').addEventListener('click', () => {
-  const p = projects.find((x) => x.id === projectEditForm.dataset.id);
-  projectDialog.close();
-  prefillAdd(p);
+$('#projets-view').addEventListener('click', (e) => {
+  if (onCommentEdit(e)) return;
+  if (e.target.closest('[data-pp-past]')) { ppShowPast = !ppShowPast; renderProjectPage(); }
 });
 
 // Liens d'accès rapide d'un projet (devis compris, en tête)
@@ -1967,6 +2072,7 @@ $('#link-form').addEventListener('submit', async (e) => {
     links.push(created);
     f.reset();
     renderProjectLinks(projects.find((x) => x.id === projectEditForm.dataset.id));
+    render();
     f.label.focus();
   } catch (ex) {
     console.error(ex);
@@ -1981,6 +2087,7 @@ $('#project-links').addEventListener('click', async (e) => {
   const snapshot = links;
   links = links.filter((l) => l.id !== id);
   renderProjectLinks(projects.find((x) => x.id === projectEditForm.dataset.id));
+  render();
   run(() => api('project_links', `?id=eq.${id}`, { method: 'DELETE' }), () => { links = snapshot; });
 });
 
@@ -2083,7 +2190,7 @@ function reopenProject(id) {
   const delConsigned = e.target.dataset.deleteConsigned;
   if (delConsigned) return deleteConsignedTask(delConsigned);
   const open = e.target.closest('[data-open-project]')?.dataset.openProject;
-  if (open) openProject(open);
+  if (open) goProject(open);
 }));
 
 $('#project-form').addEventListener('submit', (e) => {
@@ -2289,7 +2396,7 @@ function statTile(label, value, detail, { alert = false, bar = null } = {}) {
       <dd class="mt-1 text-2xl font-semibold tracking-tight tabular-nums ${alert ? 'text-amber-700' : ''}">${esc(value)}</dd>
       <dd class="mt-0.5 text-xs ${alert ? 'text-amber-700' : 'text-slate-500'}">${esc(detail)}</dd>
       ${bar === null ? '' : `<div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${bar}"
-        aria-label="Temps passé sur l’estimé des projets en cours"><div class="h-full rounded-full bg-slate-900" style="width:${Math.min(100, bar)}%"></div></div>`}
+        aria-label="Temps passé sur l’estimé"><div class="h-full rounded-full bg-slate-900" style="width:${Math.min(100, bar)}%"></div></div>`}
     </div>`;
 }
 
@@ -2311,7 +2418,7 @@ function clientStatsHTML(o) {
 }
 
 const clientLinkChip = (l) => `
-  <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}"
+  <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="${esc(l.url)}"
      class="max-w-[10rem] truncate text-[11px] font-medium rounded px-1.5 py-0.5 border transition ${l.quote
        ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}">${esc(l.label)}</a>`;

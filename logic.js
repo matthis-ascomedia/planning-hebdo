@@ -954,6 +954,31 @@ ${String(note ?? '').trim()}`;
   // Filtre proposé à l'ouverture : les clients actifs, ou tous s'il n'y en a aucun.
   const defaultClientFilter = (counts) => (counts.actifs > 0 ? 'actifs' : 'tous');
 
+  // ---- Page projet (Lot 31) ----
+  // Tâches du projet en trois groupes : à faire (jours dans l'ordre, puis le sas), terminées (encore dans le planning)
+  // et historique (archivées, la plus récente d'abord) ; indicateurs de temps et d'estimé.
+  function projectOverview(project, tasks, history) {
+    const dayRank = (t) => (t.day_of_week ? DAYS.indexOf(t.day_of_week) : DAYS.length);
+    const byDay = (a, b) => dayRank(a) - dayRank(b) || (a.position ?? 0) - (b.position ?? 0);
+    const current = tasks.filter((t) => t.project_id === project.id);
+    const todo = current.filter((t) => !t.is_completed).sort(byDay);
+    const done = current.filter((t) => t.is_completed).sort(byDay);
+    const past = history.filter((t) => t.project_id === project.id)
+      .sort((a, b) => new Date(b.archived_at) - new Date(a.archived_at));
+    const time = projectTime(tasks, history, project.id);
+    const budget = budgetStatus(project.estimated_hours, time.spent);
+    return {
+      count: time.count, todo: todo.length, done: done.length + past.length,
+      planned: time.planned, spent: time.spent,
+      estimated: budget ? budget.estimated : null,
+      pct: budget ? budget.pct : null,
+      over: !!budget?.over,
+      remaining: budget ? Math.max(0, budget.estimated - time.spent) : null,
+      excess: budget?.over ? time.spent - budget.estimated : 0,
+      groups: { todo, done, past },
+    };
+  }
+
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
@@ -964,6 +989,6 @@ ${String(note ?? '').trim()}`;
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
-    initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter,
+    initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview,
     weekSnapshot, weekPeriods, weekTasks };
 }));

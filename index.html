@@ -348,6 +348,59 @@
       </div>
     </div>
 
+    <!-- Page projet (#projets/<id>) -->
+    <div id="projets-view" class="hidden" data-lot="Lot 31">
+      <p id="pp-missing" class="hidden text-sm text-slate-500">Projet introuvable. <a href="#clients" class="underline hover:text-slate-900">Retour aux clients</a></p>
+      <div id="project-page" class="hidden space-y-5">
+        <a id="pp-back" href="#clients" class="inline-block text-sm text-slate-500 hover:text-slate-900 transition"></a>
+
+        <!-- En-tête -->
+        <section class="flex flex-wrap items-start justify-between gap-4 bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-sm">
+          <div class="min-w-0 flex-1 basis-72">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <h2 id="pp-title" class="text-xl sm:text-2xl font-semibold tracking-tight break-words"></h2>
+              <span id="pp-status" class="text-[11px] font-medium rounded px-1.5 py-0.5"></span>
+            </div>
+            <p id="pp-meta" class="mt-1 text-sm text-slate-500"></p>
+            <div id="pp-links" class="mt-2 flex flex-wrap gap-1.5"></div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" id="pp-edit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Modifier</button>
+            <button type="button" id="pp-add" class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Ajouter une tâche</button>
+            <button type="button" id="pp-archive" class="px-2.5 py-2 text-sm text-slate-500 hover:text-slate-900 transition"></button>
+          </div>
+        </section>
+
+        <!-- Indicateurs -->
+        <dl id="pp-stats" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></dl>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+          <!-- Tâches : à faire, terminées, historique -->
+          <section class="lg:col-span-2 min-w-0 bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-sm">
+            <div class="flex items-center justify-between gap-2">
+              <h3 class="text-base font-semibold tracking-tight">Tâches <span id="pp-count" class="ml-1 text-xs font-medium text-slate-500 tabular-nums">0</span></h3>
+              <a href="#planning" class="text-xs text-slate-500 hover:text-slate-900 transition">Voir dans le planning →</a>
+            </div>
+            <div id="pp-tasks" class="mt-3 space-y-4"></div>
+          </section>
+
+          <div class="min-w-0 space-y-5">
+            <section class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+              <div class="flex items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold">Accès rapide</h3>
+                <button type="button" id="pp-add-link" class="text-xs text-slate-500 hover:text-slate-900 px-1 py-1 transition">+ Lien</button>
+              </div>
+              <ul id="pp-quick" class="mt-2"></ul>
+            </section>
+            <section class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+              <h3 class="text-sm font-semibold">Informations</h3>
+              <dl id="pp-info" class="mt-2 space-y-1"></dl>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Réglages : taxonomie des types de projet -->
     <div id="settings-view" class="hidden max-w-2xl space-y-6" data-lot="Lot 13">
       <h2 class="text-lg font-semibold tracking-tight">Réglages</h2>
@@ -467,55 +520,56 @@
   <!-- Détail d'un projet (clic sur un dossier du sas) -->
   <dialog id="project-dialog" aria-labelledby="project-title" data-lot="Lot 3"
     class="m-auto w-[92vw] max-w-lg rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40">
-    <div class="p-5 space-y-4">
+    <div class="p-5 space-y-5">
       <div>
-        <h2 id="project-title" class="text-base font-semibold tracking-tight">Détail du projet</h2>
-        <p class="text-sm text-slate-500">Client : <span id="project-client"></span></p>
+        <h2 id="project-title" class="text-base font-semibold tracking-tight">Modifier le projet</h2>
+        <p class="text-sm text-slate-500"><span id="project-client"></span></p>
       </div>
-      <form id="project-edit-form" class="space-y-2">
-        <div class="flex gap-2">
-          <input name="project_name" required autocomplete="off" aria-label="Nom du projet"
-            class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
-          <input name="year" required inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Année" placeholder="Année"
-            class="w-20 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+      <form id="project-edit-form" class="space-y-5">
+        <div class="space-y-2">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Identité</h3>
+          <div class="flex gap-2">
+            <label class="min-w-0 flex-1 block"><span class="block text-xs text-slate-500 mb-1">Nom du projet</span>
+              <input name="project_name" required autocomplete="off" aria-label="Nom du projet" class="w-full px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" /></label>
+            <label class="w-24 block"><span class="block text-xs text-slate-500 mb-1">Année</span>
+              <input name="year" required inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Année" placeholder="Année" class="w-full px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" /></label>
+          </div>
+          <label class="block" data-lot="Lot 13"><span class="block text-xs text-slate-500 mb-1">Type de projet</span>
+            <input name="type" list="types-datalist" autocomplete="off" aria-label="Type de projet" placeholder="Type de projet (ex. Site web)" class="w-full px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" /></label>
+          <datalist id="types-datalist"></datalist>
         </div>
-        <input name="type" list="types-datalist" autocomplete="off" aria-label="Type de projet" placeholder="Type de projet (ex. Site web)"
-          data-lot="Lot 13" class="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
-        <datalist id="types-datalist"></datalist>
-        <label class="block" data-lot="Lot 22">
-          <span class="block text-xs text-slate-500 mb-1">Temps estimé du projet (h), facultatif</span>
-          <input name="estimated_hours" type="number" min="0" step="0.5" inputmode="decimal" aria-label="Temps estimé du projet, en heures"
-            class="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
-        </label>
-        <div class="grid grid-cols-5 gap-2" data-lot="Lot 8">
-          <input name="quote_label" autocomplete="off" aria-label="Libellé du devis" placeholder="Devis (libellé)"
-            class="col-span-2 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
-          <input name="quote_url" autocomplete="off" aria-label="Lien du devis" placeholder="Lien du devis"
-            class="col-span-3 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
-        </div>
-        <div class="flex justify-end">
-          <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Enregistrer</button>
+        <div class="space-y-2">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Estimation et devis</h3>
+          <label class="block" data-lot="Lot 22">
+            <span class="block text-xs text-slate-500 mb-1">Temps estimé du projet (h), facultatif</span>
+            <input name="estimated_hours" type="number" min="0" step="0.5" inputmode="decimal" aria-label="Temps estimé du projet, en heures" class="w-full px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" />
+          </label>
+          <div class="grid grid-cols-5 gap-2" data-lot="Lot 8">
+            <label class="col-span-2 block"><span class="block text-xs text-slate-500 mb-1">Libellé du devis</span>
+              <input name="quote_label" autocomplete="off" aria-label="Libellé du devis" placeholder="Devis" class="min-w-0 w-full px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" /></label>
+            <label class="col-span-3 block"><span class="block text-xs text-slate-500 mb-1">Lien du devis</span>
+              <input name="quote_url" autocomplete="off" aria-label="Lien du devis" placeholder="https://…" class="min-w-0 w-full px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" /></label>
+          </div>
         </div>
       </form>
-      <p id="project-error" class="hidden text-sm text-red-700"></p>
       <div data-lot="Lot 8" class="space-y-2">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Accès rapide</h3>
         <ul id="project-links" class="space-y-1"></ul>
         <form id="link-form" class="flex gap-2">
           <input name="label" required autocomplete="off" aria-label="Libellé du lien" placeholder="Libellé"
-            class="w-1/3 min-w-0 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+            class="w-1/3 min-w-0 px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" />
           <input name="url" required autocomplete="off" aria-label="Adresse du lien" placeholder="Lien (https://…)"
-            class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-slate-300 focus:outline-none" />
+            class="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg bg-white border border-slate-200 focus:border-slate-400 focus:outline-none" />
           <button type="submit" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Ajouter</button>
         </form>
       </div>
-      <dl id="project-stats" class="grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-lg bg-slate-50 p-3"></dl>
-      <ul id="project-tasks" class="max-h-64 overflow-y-auto"></ul>
-      <div class="flex justify-between gap-2 pt-1">
-        <button type="button" id="project-plan"
-          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Ajouter une tâche</button>
-        <button type="button" id="project-close"
-          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Fermer</button>
+      <p id="project-error" class="hidden text-sm text-red-700"></p>
+      <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4">
+        <button type="button" id="project-view" data-lot="Lot 31" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Voir la fiche projet</button>
+        <div class="flex gap-2">
+          <button type="button" id="project-close" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>
+          <button type="submit" form="project-edit-form" class="px-3.5 py-2 text-sm font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition">Enregistrer</button>
+        </div>
       </div>
     </div>
   </dialog>

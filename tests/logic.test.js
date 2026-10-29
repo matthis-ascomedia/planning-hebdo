@@ -1599,3 +1599,49 @@ describe('liste des clients (lot 30)', () => {
     assert.equal(L.defaultClientFilter({ actifs: 0, inactifs: 2, tous: 2 }), 'tous');
   });
 });
+
+describe('page projet (lot 31)', () => {
+  const p = { id: 'p1', name: 'Refonte', estimated_hours: 10 };
+  const tasks = [
+    task({ id: 'a', project_id: 'p1', estimated_hours: 2, day_of_week: 'Jeudi' }),
+    task({ id: 'b', project_id: 'p1', estimated_hours: 1, day_of_week: null }),
+    task({ id: 'c', project_id: 'p1', estimated_hours: 3, day_of_week: 'Lundi' }),
+    task({ id: 'd', project_id: 'p1', estimated_hours: 4, day_of_week: 'Mardi', is_completed: true, actual_hours: 6 }),
+    task({ id: 'x', project_id: 'autre', estimated_hours: 9 }),
+  ];
+  const history = [
+    task({ id: 'h1', project_id: 'p1', estimated_hours: 2, is_completed: true, archived_at: '2026-10-01T10:00:00Z' }),
+    task({ id: 'h2', project_id: 'p1', estimated_hours: 1, is_completed: true, archived_at: '2026-10-10T10:00:00Z' }),
+    task({ id: 'hx', project_id: 'autre', archived_at: '2026-10-12T10:00:00Z' }),
+  ];
+
+  test('groupes : à faire (jours puis sas), terminées, historique récent d’abord', () => {
+    const o = L.projectOverview(p, tasks, history);
+    assert.deepEqual(o.groups.todo.map((t) => t.id), ['c', 'a', 'b']);
+    assert.deepEqual(o.groups.done.map((t) => t.id), ['d']);
+    assert.deepEqual(o.groups.past.map((t) => t.id), ['h2', 'h1']);
+    assert.deepEqual([o.count, o.todo, o.done], [6, 3, 3]);
+  });
+
+  test('temps : planifié, passé, estimé, reste', () => {
+    const o = L.projectOverview(p, tasks, history);
+    assert.deepEqual([o.planned, o.spent, o.estimated, o.over, o.remaining, o.excess], [13, 9, 10, false, 1, 0]);
+    assert.equal(o.pct, 90);
+  });
+
+  test('estimé dépassé : écart et reste à zéro', () => {
+    const o = L.projectOverview({ ...p, estimated_hours: 5 }, tasks, history);
+    assert.deepEqual([o.over, o.remaining, o.excess, o.pct], [true, 0, 4, 100]);
+  });
+
+  test('sans estimé : pas de reste ni de pourcentage', () => {
+    const o = L.projectOverview({ ...p, estimated_hours: null }, tasks, history);
+    assert.deepEqual([o.estimated, o.pct, o.remaining, o.over], [null, null, null, false]);
+    assert.equal(o.spent, 9);
+  });
+
+  test('projet sans tâche', () => {
+    const o = L.projectOverview({ id: 'vide', estimated_hours: null }, tasks, history);
+    assert.deepEqual([o.count, o.todo, o.done, o.planned, o.spent], [0, 0, 0, 0, 0]);
+  });
+});
