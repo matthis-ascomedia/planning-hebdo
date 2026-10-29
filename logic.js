@@ -917,6 +917,43 @@ ${String(note ?? '').trim()}`;
     };
   }
 
+  // ---- Liste des clients (Lot 30) ----
+  // Une carte par client : mêmes calculs que la fiche (clientOverview), plus l'année du dernier projet terminé.
+  // `query` : nom ou site, accents et casse ignorés. `filter` : 'actifs' (au moins un projet en cours) | 'inactifs' | 'tous'.
+  // `sort` : 'nom' | 'depasses' (estimés dépassés d'abord) | 'temps' (temps passé des projets en cours) | 'semaine' (tâches de la semaine)
+  // | 'creation' (date de création de la fiche, la plus récente d'abord).
+  // Les compteurs des filtres suivent la recherche, pas le filtre.
+  function clientCards(clients, projects, tasks, history, { query = '', filter = 'actifs', sort = 'nom' } = {}) {
+    const q = normalizeText(query);
+    const found = clients
+      .filter((c) => !q || normalizeText(c.name).includes(q) || normalizeText(c.website).includes(q))
+      .map((client) => {
+        const o = clientOverview(projects, tasks, history, client.id);
+        const doneYears = projects.filter((p) => p.client_id === client.id && p.status === 'termine' && p.year).map((p) => p.year);
+        return {
+          client, open: o.open, total: o.total, spent: o.spent, estimated: o.estimated, pct: o.pct,
+          overCount: o.over.length, week: o.week.planned.length, weekHours: o.week.hours,
+          lastDoneYear: doneYears.length ? Math.max(...doneYears) : null,
+        };
+      });
+    const counts = { actifs: found.filter((c) => c.open > 0).length, inactifs: found.filter((c) => c.open === 0).length, tous: found.length };
+    const byName = (a, b) => a.client.name.localeCompare(b.client.name);
+    const order = {
+      nom: byName,
+      depasses: (a, b) => b.overCount - a.overCount || byName(a, b),
+      temps: (a, b) => b.spent - a.spent || byName(a, b),
+      semaine: (a, b) => b.week - a.week || b.weekHours - a.weekHours || byName(a, b),
+      creation: (a, b) => (Date.parse(b.client.created_at) || 0) - (Date.parse(a.client.created_at) || 0) || byName(a, b),
+    }[sort] || byName;
+    const cards = found
+      .filter((c) => filter === 'tous' || (filter === 'inactifs' ? c.open === 0 : c.open > 0))
+      .sort(order);
+    return { cards, counts };
+  }
+
+  // Filtre proposé à l'ouverture : les clients actifs, ou tous s'il n'y en a aucun.
+  const defaultClientFilter = (counts) => (counts.actifs > 0 ? 'actifs' : 'tous');
+
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
@@ -927,6 +964,6 @@ ${String(note ?? '').trim()}`;
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
-    initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview,
+    initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter,
     weekSnapshot, weekPeriods, weekTasks };
 }));

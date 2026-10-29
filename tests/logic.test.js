@@ -1541,3 +1541,61 @@ describe('fiche client (lot 29)', () => {
     assert.deepEqual(L.clientConsigned(projects, history, 'c-Acme', 1).map((t) => t.id), ['h2']);
   });
 });
+
+describe('liste des clients (lot 30)', () => {
+  const cl = (id, name, website = null, created_at = null) => ({ id, name, website, created_at });
+  const clients = [cl('c1', 'Maison Lumen', 'https://maisonlumen.fr', '2024-03-01T00:00:00Z'), cl('c2', 'Café Mélia', null, '2026-01-10T00:00:00Z'), cl('c3', 'Globex', 'https://globex.com', '2025-06-15T00:00:00Z'), cl('c4', 'Zeta')];
+  const pr = (id, cid, extra = {}) => ({ id, name: id, client_id: cid, status: 'en_cours', year: 2026, estimated_hours: null, clients: { id: cid, name: cid }, ...extra });
+  const projects = [
+    pr('a', 'c1', { estimated_hours: 10 }), pr('b', 'c1'),
+    pr('d', 'c2', { status: 'termine', year: 2024 }), pr('e', 'c2', { status: 'termine', year: 2025 }),
+    pr('g', 'c3', { estimated_hours: 20 }),
+  ];
+  const tasks = [
+    task({ id: 't1', project_id: 'a', estimated_hours: 14, day_of_week: 'Lundi', is_completed: true }), // Lumen : 14 h passées sur 10 h → dépassé
+    task({ id: 't2', project_id: 'b', estimated_hours: 1, day_of_week: 'Mardi' }),
+    task({ id: 't3', project_id: 'g', estimated_hours: 5, day_of_week: 'Lundi', is_completed: true }),
+    task({ id: 't4', project_id: 'g', estimated_hours: 2, day_of_week: 'Jeudi' }),
+    task({ id: 't5', project_id: 'g', estimated_hours: 2, day_of_week: 'Vendredi' }),
+  ];
+  const run = (opts) => L.clientCards(clients, projects, tasks, [], opts);
+  const names = (r) => r.cards.map((c) => c.client.name);
+
+  test('filtre : actifs / inactifs / tous, compteurs indépendants du filtre', () => {
+    assert.deepEqual(names(run({ filter: 'actifs' })), ['Globex', 'Maison Lumen']);
+    assert.deepEqual(names(run({ filter: 'inactifs' })), ['Café Mélia', 'Zeta']);
+    assert.equal(run({ filter: 'tous' }).cards.length, 4);
+    assert.deepEqual(run({ filter: 'actifs' }).counts, { actifs: 2, inactifs: 2, tous: 4 });
+  });
+
+  test('recherche : nom ou site, accents et casse ignorés ; les compteurs suivent la recherche', () => {
+    assert.deepEqual(names(run({ filter: 'tous', query: 'CAFE' })), ['Café Mélia']);
+    assert.deepEqual(names(run({ filter: 'tous', query: 'maisonlumen' })), ['Maison Lumen']);
+    assert.deepEqual(run({ filter: 'actifs', query: 'e' }).counts, { actifs: 2, inactifs: 2, tous: 4 });
+    assert.deepEqual(run({ filter: 'actifs', query: 'glob' }).counts, { actifs: 1, inactifs: 0, tous: 1 });
+    assert.deepEqual(names(run({ query: 'introuvable', filter: 'tous' })), []);
+  });
+
+  test('tri : nom, dépassés d’abord, temps passé, charge de la semaine', () => {
+    const f = { filter: 'tous' };
+    assert.deepEqual(names(run({ ...f, sort: 'nom' })), ['Café Mélia', 'Globex', 'Maison Lumen', 'Zeta']);
+    assert.deepEqual(names(run({ ...f, sort: 'depasses' })), ['Maison Lumen', 'Café Mélia', 'Globex', 'Zeta']);
+    assert.deepEqual(names(run({ ...f, sort: 'temps' })), ['Maison Lumen', 'Globex', 'Café Mélia', 'Zeta']);
+    assert.deepEqual(names(run({ ...f, sort: 'semaine' })), ['Globex', 'Maison Lumen', 'Café Mélia', 'Zeta']);
+    assert.deepEqual(names(run({ ...f, sort: 'creation' })), ['Café Mélia', 'Globex', 'Maison Lumen', 'Zeta']); // récents d’abord, sans date en dernier
+    assert.deepEqual(names(run({ ...f, sort: 'inconnu' })), ['Café Mélia', 'Globex', 'Maison Lumen', 'Zeta']);
+  });
+
+  test('indicateurs de la carte et dernier projet terminé', () => {
+    const [lumen] = run({ filter: 'tous', query: 'lumen' }).cards;
+    assert.deepEqual([lumen.open, lumen.total, lumen.spent, lumen.estimated, lumen.overCount, lumen.week], [2, 2, 14, 10, 1, 2]);
+    const [cafe] = run({ filter: 'tous', query: 'mélia' }).cards;
+    assert.deepEqual([cafe.open, cafe.total, cafe.lastDoneYear, cafe.week], [0, 2, 2025, 0]);
+    assert.equal(run({ filter: 'tous', query: 'zeta' }).cards[0].lastDoneYear, null);
+  });
+
+  test('defaultClientFilter : actifs, ou tous s’il n’y en a aucun', () => {
+    assert.equal(L.defaultClientFilter({ actifs: 3, inactifs: 1, tous: 4 }), 'actifs');
+    assert.equal(L.defaultClientFilter({ actifs: 0, inactifs: 2, tous: 2 }), 'tous');
+  });
+});
