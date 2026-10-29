@@ -13,6 +13,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
+  initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview,
   weekSnapshot, weekPeriods, weekTasks } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
@@ -27,6 +28,16 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.29.0', type: 'mineure', lot: 'Lot 29', date: '2026-10-29',
+    items: [
+      'Fiche client refondue : logo, nom, site web et ancienneté en en-tête ; le formulaire passe derrière « Modifier la fiche ».',
+      'Quatre indicateurs : projets en cours, temps passé sur l’estimé, projets dont l’estimé est dépassé, charge de la semaine.',
+      'Projets du client : filtre En cours / Terminés / Tous, temps passé et estimé avec barre (ambre au-delà de l’estimé), devis et liens rapides, Ouvrir / Rouvrir. Les projets dépassés passent en premier.',
+      'Colonne de droite : tâches du client cette semaine (à cocher comme dans le planning) et dernières tâches consignées.',
+      'Les initiales des clients sans logo reprennent la première lettre de deux mots (« Maison Lumen » → ML).',
+    ],
+  },
   {
     version: '1.28.1', type: 'patch', lot: 'Lot 28', date: '2026-10-21',
     items: [
@@ -1217,12 +1228,22 @@ $('#board').addEventListener('change', (e) => {
   const commentId = e.target.dataset.commentToggle;
   if (commentId) return toggleComment(commentId, e.target.checked);
   const id = e.target.dataset.toggle;
-  if (!id) return;
+  if (id) toggleTask(id, e.target.checked);
+});
+
+function toggleTask(id, checked) {
   const t = tasks.find((x) => x.id === id);
+  if (!t) return;
   const prev = t.is_completed;
-  t.is_completed = e.target.checked;
+  t.is_completed = checked;
   render();
   run(() => db.update(id, { is_completed: t.is_completed }), () => { t.is_completed = prev; });
+}
+
+// Fiche client : les tâches de la semaine se cochent comme dans le planning
+$('#client-page').addEventListener('change', (e) => {
+  const id = e.target.dataset.toggle;
+  if (id) toggleTask(id, e.target.checked);
 });
 
 // Édition / suppression : cartes du planning et tâches rangées dans le sas
@@ -2173,7 +2194,7 @@ $('#history-view').addEventListener('click', (e) => {
 });
 
 // ---------- Clients : liste et fiche (#clients/<id>) ----------
-const initials = (name) => esc(name.trim().slice(0, 2).toUpperCase());
+const initials = (name) => esc(initialsOf(name));
 const logoHTML = (c, size) => c.logo
   ? `<img src="${esc(c.logo)}" alt="" class="${size} rounded-lg object-cover bg-white border border-slate-200" />`
   : `<span class="${size} rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-xs font-semibold text-slate-400">${initials(c.name)}</span>`;
@@ -2205,36 +2226,152 @@ function renderClients() {
   $('#clients-grid').innerHTML = list.join('') || '<li class="text-sm text-slate-400">Aucun client pour le moment.</li>';
 }
 
+const CLIENT_FILTERS = [['en_cours', 'En cours'], ['termine', 'Terminés'], ['tous', 'Tous']];
+let clientFilter = 'en_cours'; // filtre de la liste des projets de la fiche
+let clientFilterFor = ''; // client auquel il s'applique : changer de fiche le réinitialise
+
+function statTile(label, value, detail, { alert = false, bar = null } = {}) {
+  return `
+    <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <dt class="text-xs font-medium text-slate-500">${esc(label)}</dt>
+      <dd class="mt-1 text-2xl font-semibold tracking-tight tabular-nums ${alert ? 'text-amber-700' : ''}">${esc(value)}</dd>
+      <dd class="mt-0.5 text-xs ${alert ? 'text-amber-700' : 'text-slate-500'}">${esc(detail)}</dd>
+      ${bar === null ? '' : `<div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${bar}"
+        aria-label="Temps passé sur l’estimé des projets en cours"><div class="h-full rounded-full bg-slate-900" style="width:${Math.min(100, bar)}%"></div></div>`}
+    </div>`;
+}
+
+function clientStatsHTML(o) {
+  const worst = o.over[0];
+  const week = o.week;
+  return [
+    statTile('Projets en cours', String(o.open), `sur ${plural(o.total, 'projet')}`),
+    statTile('Temps passé · projets en cours', fmtH(o.spent),
+      o.estimated > 0 ? `sur ${fmtH(o.estimated)} estimées · ${o.pct} %` : 'aucun estimé renseigné',
+      { bar: o.estimated > 0 ? o.pct : null }),
+    worst
+      ? statTile('Estimé dépassé', plural(o.over.length, 'projet'),
+        `${worst.project.name} · +${fmtH(worst.excess)}${o.over.length > 1 ? ` · et ${o.over.length - 1} autre${o.over.length > 2 ? 's' : ''}` : ''}`, { alert: true })
+      : statTile('Estimé dépassé', 'Aucun', o.estimated > 0 ? 'tous les projets tiennent leur estimé' : 'aucun estimé renseigné'),
+    statTile('Cette semaine', week.planned.length ? plural(week.planned.length, 'tâche') : 'Aucune tâche',
+      week.planned.length ? `${fmtH(week.hours)} planifiées · ${plural(week.done, 'terminée')}` : 'rien de planifié'),
+  ].join('');
+}
+
+const clientLinkChip = (l) => `
+  <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}"
+     class="max-w-[10rem] truncate text-[11px] font-medium rounded px-1.5 py-0.5 border transition ${l.quote
+       ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}">${esc(l.label)}</a>`;
+
+function clientProjectHTML({ project: p, time, budget: b, links: ls }) {
+  const done = p.status === 'termine';
+  const meta = [p.type, p.year].filter(Boolean).join(' · ');
+  const timeCell = b
+    ? `<p class="text-xs tabular-nums ${b.over ? 'font-medium text-amber-700' : 'text-slate-500'}">${fmtH(b.spent)} / ${fmtH(b.estimated)}</p>
+       <div class="mt-1 h-1 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${b.pct}"
+            aria-label="Avancement du temps passé sur l’estimé"><div class="h-full rounded-full ${b.over ? 'bg-amber-500' : done ? 'bg-slate-300' : 'bg-slate-900'}" style="width:${b.pct}%"></div></div>`
+    : time.spent ? `<p class="text-xs text-slate-400 tabular-nums">${fmtH(time.spent)} · sans estimé</p>` : '<p class="text-xs text-slate-300" aria-label="Aucun temps">—</p>';
+  const badge = done ? ['bg-slate-100 text-slate-600', 'Terminé']
+    : b?.over ? ['bg-amber-50 text-amber-700', 'Estimé dépassé'] : ['bg-emerald-50 text-emerald-700', 'En cours'];
+  const action = done
+    ? `<button type="button" class="text-xs font-medium px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition" data-reopen="${p.id}">Rouvrir</button>`
+    : `<button type="button" class="text-xs px-2 py-1 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition" data-open-project="${p.id}">Ouvrir</button>`;
+  return `
+    <li class="flex flex-wrap items-center gap-x-4 gap-y-2 py-3 border-t border-slate-100 first:border-0 sm:first:border-t">
+      <div class="min-w-0 flex-1 basis-56">
+        <button type="button" class="block max-w-full text-left truncate text-sm font-medium hover:underline ${done ? 'text-slate-500' : ''}" data-open-project="${p.id}">${esc(p.name)}</button>
+        ${meta || ls.length ? `<p class="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">${meta ? `<span>${esc(meta)}</span>` : ''}${ls.map(clientLinkChip).join('')}</p>` : ''}
+      </div>
+      <div class="w-36 shrink-0">${timeCell}</div>
+      <div class="flex items-center justify-end gap-2 w-full sm:w-52 shrink-0">
+        <span class="text-[11px] font-medium rounded px-1.5 py-0.5 ${badge[0]}">${badge[1]}</span>${action}
+      </div>
+    </li>`;
+}
+
+// Tâche d'une liste de la fiche : case à cocher (planning) ou case figée (consignée), projet, jour ou date, heures.
+function clientTaskHTML(t, { detail, hours, toggle }) {
+  const p = projects.find((x) => x.id === t.project_id);
+  const done = toggle ? t.is_completed : true;
+  return `
+    <li class="flex items-start gap-2.5 py-1.5">
+      <input type="checkbox" class="chk mt-0.5" ${done ? 'checked' : ''} ${toggle ? `data-toggle="${t.id}"` : 'disabled'} aria-label="${toggle ? 'Terminée' : 'Consignée'}" />
+      <span class="min-w-0 flex-1">
+        <span class="block text-sm ${done ? 'text-slate-400 line-through' : ''}">${esc(t.task_name)}</span>
+        <span class="block text-xs text-slate-500 truncate">${esc([p?.name, detail].filter(Boolean).join(' · '))}</span>
+      </span>
+      <span class="text-xs text-slate-500 tabular-nums">${fmtH(hours)}</span>
+    </li>`;
+}
+
+const WEEK_LIST_MAX = 8;
+
 function renderClientPage(c) {
-  const f = $('#client-edit-form');
-  if (f.dataset.id !== c.id) { // première ouverture de cette fiche : on remplit le formulaire
-    f.dataset.id = c.id;
-    f.client_name.value = c.name;
-    f.website.value = c.website ?? '';
-    $('#client-error').classList.add('hidden');
-  }
-  $('#client-logo').innerHTML = c.logo
+  $('#client-edit-form').dataset.id = c.id; // le formulaire de la fenêtre n'est rempli qu'à son ouverture
+  const logo = c.logo
     ? `<img src="${esc(c.logo)}" alt="Logo de ${esc(c.name)}" class="w-full h-full object-cover" />`
     : initials(c.name);
+  $('#client-logo').innerHTML = logo;
+  $('#client-logo-preview').innerHTML = logo;
   $('#client-logo-clear').disabled = !c.logo;
-  const ps = clientProjects(projects, c.id);
-  $('#client-projects-count').textContent = ps.length;
-  $('#client-projects').innerHTML = ps.map((p) => `
-    <li class="flex items-center gap-2 py-2 text-sm">
-      <button type="button" class="min-w-0 flex-1 text-left truncate font-medium hover:underline" data-open-project="${p.id}">${esc(p.name)}</button>
-      ${p.type ? `<span class="hidden sm:inline text-xs text-slate-500 truncate max-w-[10rem]">${esc(p.type)}</span>` : ''}
-      <span class="text-xs text-slate-500 tabular-nums">${p.year ?? ''}</span>
-      ${p.status === 'termine'
-        ? `<span class="text-[11px] font-medium bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">Terminé</span>
-           <button type="button" class="text-xs font-medium px-2 py-1 rounded-lg border border-slate-200 hover:bg-slate-100 transition" data-reopen="${p.id}">Rouvrir</button>`
-        : '<span class="text-[11px] font-medium bg-emerald-50 text-emerald-700 rounded px-1.5 py-0.5">En cours</span>'}
-    </li>`).join('') || '<li class="py-2 text-sm text-slate-400">Aucun projet rattaché.</li>';
+  $('#client-title').textContent = c.name;
+  $('#client-dialog-title').textContent = `Modifier « ${c.name} »`;
+
+  const o = clientOverview(projects, tasks, history, c.id);
+  const site = $('#client-site');
+  site.classList.toggle('hidden', !c.website);
+  $('#client-site-sep').classList.toggle('hidden', !c.website || !o.total);
+  if (c.website) { site.href = c.website; site.textContent = hostOf(c.website); }
+  $('#client-since').textContent = [o.since && `Client depuis ${o.since}`, o.total && plural(o.total, 'projet')].filter(Boolean).join(' · ') || 'Aucun projet pour le moment';
+  $('#client-stats').innerHTML = clientStatsHTML(o);
+
+  // Projets : filtre (réinitialisé à chaque changement de fiche ; « Tous » si rien n'est en cours)
+  if (clientFilterFor !== c.id) { clientFilterFor = c.id; clientFilter = o.open || !o.done ? 'en_cours' : 'tous'; }
+  const counts = { en_cours: o.open, termine: o.done, tous: o.total };
+  $('#client-filter').innerHTML = CLIENT_FILTERS.map(([key, label]) => `
+    <button type="button" data-client-filter="${key}" aria-pressed="${clientFilter === key}"
+      class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 aria-[pressed=true]:bg-slate-900 aria-[pressed=true]:text-white transition">${label} · ${counts[key]}</button>`).join('');
+  $('#client-projects-count').textContent = o.total;
+  const rows = clientProjectRows(projects, tasks, history, links, c.id, clientFilter);
+  $('#client-projects').innerHTML = rows.map(clientProjectHTML).join('')
+    || `<li class="py-3 text-sm text-slate-400">${o.total ? 'Aucun projet dans ce filtre.' : 'Aucun projet rattaché.'}</li>`;
+  const more = $('#client-more');
+  more.classList.toggle('hidden', !(clientFilter === 'en_cours' && o.done));
+  more.innerHTML = `<button type="button" data-client-filter="tous" class="text-xs text-slate-500 hover:text-slate-900 px-1 py-1 transition">Afficher les ${plural(o.done, 'projet')} terminé${o.done > 1 ? 's' : ''}</button>`;
+
+  // Cette semaine et dernières tâches consignées
+  const w = o.week;
+  $('#client-week').innerHTML = w.planned.slice(0, WEEK_LIST_MAX).map((t) => clientTaskHTML(t, { detail: t.day_of_week, hours: t.estimated_hours, toggle: true })).join('')
+    || '<li class="py-1.5 text-sm text-slate-400">Aucune tâche planifiée cette semaine.</li>';
+  const extra = [w.planned.length > WEEK_LIST_MAX && `+ ${plural(w.planned.length - WEEK_LIST_MAX, 'autre')} dans le planning`,
+    w.parked && `+ ${plural(w.parked, 'tâche')} rangée${w.parked > 1 ? 's' : ''} dans le sas`].filter(Boolean);
+  $('#client-week-more').textContent = extra.join(' · ');
+  $('#client-week-more').classList.toggle('hidden', !extra.length);
+  $('#client-consigned').innerHTML = clientConsigned(projects, history, c.id)
+    .map((t) => clientTaskHTML(t, { detail: fmtDate(t.consigned_at, SHORT_DATE), hours: hoursSpent(t), toggle: false })).join('')
+    || '<li class="py-1.5 text-sm text-slate-400">Aucune tâche consignée.</li>';
+
   const blocker = deleteClientBlocker(c, projects, DEFAULT_CLIENT);
   $('#client-delete').disabled = !!blocker;
-  $('#client-delete-reason').textContent = blocker;
+  $('#client-delete-reason').textContent = blocker || 'Action irréversible.';
 }
 
 const currentClient = () => clients.find((c) => c.id === $('#client-edit-form').dataset.id);
+
+// « Modifier la fiche » : logo, nom et site web dans une fenêtre, remplie à l'ouverture.
+const clientDialog = $('#client-dialog');
+$('#client-edit').addEventListener('click', () => {
+  const c = currentClient();
+  if (!c) return;
+  const f = $('#client-edit-form');
+  f.client_name.value = c.name;
+  f.website.value = c.website ?? '';
+  $('#client-error').classList.add('hidden');
+  clientDialog.showModal();
+});
+$('#client-dialog-cancel').addEventListener('click', () => clientDialog.close());
+clientDialog.addEventListener('click', (e) => { if (e.target === clientDialog) clientDialog.close(); });
 
 function fail(el, ex) {
   console.error(ex);
@@ -2284,6 +2421,7 @@ $('#client-edit-form').addEventListener('submit', async (e) => {
     }
     Object.assign(c, { name, website });
     clients.sort((a, b) => a.name.localeCompare(b.name));
+    clientDialog.close();
     render();
     toast('Client enregistré');
   } catch (ex) { fail(err, ex); }
@@ -2333,24 +2471,42 @@ $('#client-logo-file').addEventListener('change', async (e) => {
   } catch (ex) { fail($('#client-error'), ex); }
 });
 
-$('#client-project-form').addEventListener('submit', (e) => {
+const clientProjectForm = $('#client-project-form');
+function toggleClientProjectForm(open) {
+  clientProjectForm.classList.toggle('hidden', !open);
+  $('#client-project-toggle').setAttribute('aria-expanded', String(open));
+  if (open) clientProjectForm.project_name.focus(); else clientProjectForm.reset();
+}
+$('#client-project-toggle').addEventListener('click', () => toggleClientProjectForm(clientProjectForm.classList.contains('hidden')));
+$('#client-project-cancel').addEventListener('click', () => toggleClientProjectForm(false));
+
+clientProjectForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
   const c = currentClient();
-  const err = $('#client-error');
-  err.classList.add('hidden');
+  $('#client-page-error').classList.add('hidden');
   run(async () => {
     const name = f.project_name.value.trim();
     if (projects.some((p) => p.client_id === c.id && same(p.name, name))) throw new Error('Ce client a déjà un projet portant ce nom.');
     await ensureProject(c.name, name);
-    f.reset();
+    toggleClientProjectForm(false);
+    clientFilter = 'en_cours'; // le nouveau projet est « en cours » : le rendre visible
     render();
   });
 });
 
+// Filtre de la liste des projets de la fiche
+$('#client-page').addEventListener('click', (e) => {
+  const key = e.target.closest('[data-client-filter]')?.dataset.clientFilter;
+  if (!key) return;
+  clientFilter = key;
+  render();
+});
+
 $('#client-delete').addEventListener('click', async () => {
   const c = currentClient();
-  const err = $('#client-error');
+  const err = $('#client-page-error');
+  err.classList.add('hidden');
   if (deleteClientBlocker(c, projects, DEFAULT_CLIENT)) return;
   if (!await askConfirm({ title: `Supprimer le client « ${c.name} » ?`, message: 'Cette action est irréversible.', confirmLabel: 'Supprimer', danger: true })) return;
   try {

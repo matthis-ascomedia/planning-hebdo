@@ -849,6 +849,74 @@ ${String(note ?? '').trim()}`;
     .filter((p) => p.client_id === clientId)
     .sort((a, b) => (b.year || 0) - (a.year || 0) || a.name.localeCompare(b.name));
 
+  // ---- Fiche client (Lot 29) ----
+  // Initiales d'un nom : première lettre des deux premiers mots (« Maison Lumen » → ML), sinon deux premières lettres.
+  function initialsOf(name) {
+    const words = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return '';
+    const letters = words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2);
+    return letters.toUpperCase();
+  }
+
+  // Projets du client : temps, budget, liens. Dépassés d'abord, puis année décroissante, puis nom.
+  // `filter` : 'en_cours' | 'termine' | 'tous'.
+  function clientProjectRows(projects, tasks, history, links, clientId, filter = 'tous') {
+    return projects.filter((p) => p.client_id === clientId)
+      .filter((p) => filter === 'tous' || (filter === 'termine' ? p.status === 'termine' : p.status !== 'termine'))
+      .map((p) => {
+        const time = projectTime(tasks, history, p.id);
+        return { project: p, time, budget: budgetStatus(p.estimated_hours, time.spent), links: linksOf(p, links) };
+      })
+      .sort((a, b) => (b.budget?.over ? 1 : 0) - (a.budget?.over ? 1 : 0)
+        || (b.project.year || 0) - (a.project.year || 0) || a.project.name.localeCompare(b.project.name));
+  }
+
+  // Tâches planifiées de la semaine pour les projets du client, dans l'ordre des jours, puis tâches du sas (non terminées).
+  function clientWeek(projects, tasks, clientId) {
+    const ids = new Set(projects.filter((p) => p.client_id === clientId).map((p) => p.id));
+    const mine = tasks.filter((t) => ids.has(t.project_id));
+    const planned = mine.filter((t) => t.day_of_week)
+      .sort((a, b) => DAYS.indexOf(a.day_of_week) - DAYS.indexOf(b.day_of_week) || (a.position ?? 0) - (b.position ?? 0));
+    return {
+      planned,
+      hours: sumHours(planned),
+      done: planned.filter((t) => t.is_completed).length,
+      parked: mine.filter((t) => !t.day_of_week && !t.is_completed).length,
+    };
+  }
+
+  // Dernières tâches consignées (Lot 23) des projets du client, de la plus récente à la plus ancienne.
+  function clientConsigned(projects, history, clientId, limit = 3) {
+    const ids = new Set(projects.filter((p) => p.client_id === clientId).map((p) => p.id));
+    return consignedTasks(history).filter((t) => ids.has(t.project_id)).slice(0, limit);
+  }
+
+  // Indicateurs de la fiche : projets en cours, temps passé sur l'estimé, estimés dépassés, semaine.
+  // Le pourcentage ne compte que les projets ayant un estimé, pour que le rapport passé / estimé reste cohérent.
+  function clientOverview(projects, tasks, history, clientId) {
+    const mine = projects.filter((p) => p.client_id === clientId);
+    const open = mine.filter((p) => p.status !== 'termine');
+    let spent = 0; let estimated = 0; let spentOnEstimated = 0;
+    const over = [];
+    for (const p of open) {
+      const s = projectTime(tasks, history, p.id).spent;
+      spent += s;
+      const b = budgetStatus(p.estimated_hours, s);
+      if (!b) continue;
+      estimated += b.estimated;
+      spentOnEstimated += s;
+      if (b.over) over.push({ project: p, excess: s - b.estimated });
+    }
+    over.sort((a, b) => b.excess - a.excess);
+    const week = clientWeek(projects, tasks, clientId);
+    const years = mine.map((p) => p.year).filter(Boolean);
+    return {
+      total: mine.length, open: open.length, done: mine.length - open.length,
+      spent, estimated, pct: estimated > 0 ? Math.round((spentOnEstimated / estimated) * 100) : null,
+      over, week, since: years.length ? Math.min(...years) : null,
+    };
+  }
+
   // Libellé de version affiché en pied de page ; le commit est omis s'il est inconnu.
   const buildLabel = (version, commit) => `v${version}${commit ? ` · ${commit}` : ''}`;
 
@@ -859,5 +927,6 @@ ${String(note ?? '').trim()}`;
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
+    initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview,
     weekSnapshot, weekPeriods, weekTasks };
 }));

@@ -1470,3 +1470,74 @@ describe('recette lots 25-28', () => {
     assert.deepEqual([s.task_name, s.estimated_hours], ['Comparer 2 hôtels', 0]);
   });
 });
+
+describe('fiche client (lot 29)', () => {
+  const acme = (id, name, extra = {}) => ({ ...project(id, name, 'Acme'), year: 2026, estimated_hours: null, ...extra });
+  const projects = [
+    acme('a', 'Refonte', { estimated_hours: 40 }),
+    acme('b', 'Campagne', { estimated_hours: 12 }),
+    acme('c', 'Vidéo'),
+    acme('d', 'Charte', { status: 'termine', year: 2025, estimated_hours: 24 }),
+    { ...project('x', 'Autre', 'Globex'), year: 2026, estimated_hours: 10 },
+  ];
+  const tasks = [
+    task({ id: 't1', project_id: 'a', estimated_hours: 12, day_of_week: 'Mardi', is_completed: true }),
+    task({ id: 't2', project_id: 'b', estimated_hours: 14.5, day_of_week: 'Lundi', is_completed: true, actual_hours: 14.5 }),
+    task({ id: 't3', project_id: 'c', estimated_hours: 8, day_of_week: 'Jeudi', is_completed: true }),
+    task({ id: 't4', project_id: 'a', estimated_hours: 2, day_of_week: 'Lundi' }),
+    task({ id: 't5', project_id: 'a', estimated_hours: 1, day_of_week: null }),
+    task({ id: 't6', project_id: 'x', estimated_hours: 5, day_of_week: 'Lundi' }),
+  ];
+  const history = [
+    task({ id: 'h1', project_id: 'd', day_of_week: null, is_completed: true, actual_hours: 22, archived_at: '2026-10-01T10:00:00Z', consigned_at: '2026-10-01T10:00:00Z' }),
+    task({ id: 'h2', project_id: 'a', day_of_week: null, is_completed: true, archived_at: '2026-10-10T10:00:00Z', consigned_at: '2026-10-10T10:00:00Z' }),
+    task({ id: 'h3', project_id: 'a', day_of_week: null, is_completed: true, archived_at: '2026-10-12T10:00:00Z' }),
+    task({ id: 'h4', project_id: 'x', day_of_week: null, is_completed: true, archived_at: '2026-10-15T10:00:00Z', consigned_at: '2026-10-15T10:00:00Z' }),
+  ];
+  const links = [{ id: 'l1', project_id: 'a', label: 'Figma', url: 'https://figma.com/x' }];
+
+  test('initialsOf : deux premiers mots, sinon deux lettres', () => {
+    assert.equal(L.initialsOf('Maison Lumen'), 'ML');
+    assert.equal(L.initialsOf('  acme  '), 'AC');
+    assert.equal(L.initialsOf('Le Petit Atelier'), 'LP');
+    assert.equal(L.initialsOf(''), '');
+  });
+
+  test('clientOverview : projets, temps passé / estimé, dépassés, semaine', () => {
+    const o = L.clientOverview(projects, tasks, history, 'c-Acme');
+    assert.deepEqual([o.total, o.open, o.done], [4, 3, 1]);
+    // en cours : Refonte 12 + 1 consigné (1 h estimée) + 1 (h3) = 14 ; Campagne 14,5 ; Vidéo 8
+    assert.equal(o.spent, 36.5);
+    assert.equal(o.estimated, 52);
+    assert.equal(o.pct, Math.round((28.5 / 52) * 100)); // Vidéo (sans estimé) hors pourcentage
+    assert.deepEqual(o.over.map((x) => [x.project.id, x.excess]), [['b', 2.5]]);
+    assert.equal(o.since, 2025);
+    assert.deepEqual([o.week.planned.length, o.week.hours, o.week.done, o.week.parked], [4, 36.5, 3, 1]);
+  });
+
+  test('clientOverview : client sans projet', () => {
+    const o = L.clientOverview(projects, tasks, history, 'c-Vide');
+    assert.deepEqual([o.total, o.spent, o.estimated, o.pct, o.since, o.over.length], [0, 0, 0, null, null, 0]);
+  });
+
+  test('clientProjectRows : filtre, dépassés d’abord, puis année et nom ; liens et budget', () => {
+    const rows = L.clientProjectRows(projects, tasks, history, links, 'c-Acme', 'en_cours');
+    assert.deepEqual(rows.map((r) => r.project.id), ['b', 'a', 'c']);
+    assert.equal(rows[0].budget.over, true);
+    assert.equal(rows[2].budget, null);
+    assert.deepEqual(rows[1].links.map((l) => l.label), ['Figma']);
+    assert.deepEqual(L.clientProjectRows(projects, tasks, history, links, 'c-Acme', 'termine').map((r) => r.project.id), ['d']);
+    assert.deepEqual(L.clientProjectRows(projects, tasks, history, links, 'c-Acme', 'tous').map((r) => r.project.id), ['b', 'a', 'c', 'd']);
+  });
+
+  test('clientWeek : tâches du client dans l’ordre des jours, tâches du sas comptées à part', () => {
+    const w = L.clientWeek(projects, tasks, 'c-Acme');
+    assert.deepEqual(w.planned.map((t) => t.id), ['t2', 't4', 't1', 't3']);
+    assert.equal(w.parked, 1);
+  });
+
+  test('clientConsigned : seulement les tâches consignées du client, la plus récente d’abord', () => {
+    assert.deepEqual(L.clientConsigned(projects, history, 'c-Acme').map((t) => t.id), ['h2', 'h1']);
+    assert.deepEqual(L.clientConsigned(projects, history, 'c-Acme', 1).map((t) => t.id), ['h2']);
+  });
+});
