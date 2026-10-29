@@ -1645,3 +1645,23 @@ describe('page projet (lot 31)', () => {
     assert.deepEqual([o.count, o.todo, o.done, o.planned, o.spent], [0, 0, 0, 0, 0]);
   });
 });
+
+describe('sas d’attente (lot 32)', () => {
+  const tasks = [
+    task({ id: 'a', project_id: 'p1', day_of_week: null, estimated_hours: 2 }),
+    task({ id: 'b', project_id: 'p1', day_of_week: null, estimated_hours: 1.5 }),
+    task({ id: 'c', project_id: 'p2', day_of_week: null, estimated_hours: 3 }),
+    task({ id: 'd', project_id: 'p2', day_of_week: 'Lundi', estimated_hours: 9 }), // planifiée : pas rangée
+  ];
+  test('sasSummary : projets, tâches rangées et heures d’un client', () => {
+    assert.deepEqual(L.sasSummary([{ id: 'p1' }, { id: 'p2' }], tasks), { projects: 2, parked: 3, hours: 6.5 });
+    assert.deepEqual(L.sasSummary([{ id: 'vide' }], tasks), { projects: 1, parked: 0, hours: 0 });
+  });
+  test('parkedVisible : trois tâches au plus tant que la carte n’est pas dépliée', () => {
+    const list = ['a', 'b', 'c', 'd', 'e'];
+    assert.deepEqual(L.parkedVisible(list), { shown: ['a', 'b', 'c'], more: 2 });
+    assert.deepEqual(L.parkedVisible(list, true), { shown: list, more: 0 });
+    assert.deepEqual(L.parkedVisible(['a', 'b', 'c']), { shown: ['a', 'b', 'c'], more: 0 });
+    assert.deepEqual(L.parkedVisible([]), { shown: [], more: 0 });
+  });
+});

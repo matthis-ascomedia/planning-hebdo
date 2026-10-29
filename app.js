@@ -13,7 +13,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
-  initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview,
+  initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview, sasSummary, parkedVisible,
   weekSnapshot, weekPeriods, weekTasks } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
@@ -28,6 +28,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.32.0', type: 'mineure', lot: 'Lot 32', date: '2026-10-29',
+    items: [
+      'Sas d’attente, vue Clients : une seule carte par client (logo, nom, résumé des projets et tâches rangées, lien vers la fiche) avec ses projets l’un sous l’autre.',
+      'Sas plus lisible : titre et compteur sur une ligne, recherche et « + Projet » côte à côte ; le formulaire de création ne s’ouvre qu’au clic sur « + Projet ».',
+      'Tâches rangées allégées (sans cadre, poignée de glisser-déposer, heures discrètes) : trois visibles, puis « + n autres ». Les liens rapides restent sur la carte.',
+    ],
+  },
   {
     version: '1.31.0', type: 'mineure', lot: 'Lot 31', date: '2026-10-29',
     items: [
@@ -785,13 +793,15 @@ document.addEventListener('input', (e) => {
 });
 
 // Tâche rangée dans le dossier de son projet (sas d'attente) : glissable vers un jour du planning.
+// Sans cadre : poignée, nom, heures ; modifier / supprimer au survol.
 function parkedHTML(t) {
   return `
-    <article class="card group flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5 cursor-grab active:cursor-grabbing hover:border-slate-300 transition"
-             draggable="true" data-id="${t.id}">
+    <article class="card group flex items-center gap-2 rounded-md px-1.5 py-1.5 cursor-grab active:cursor-grabbing hover:bg-slate-50 transition"
+             draggable="true" data-id="${t.id}" data-lot="Lot 32">
+      <span aria-hidden="true" class="shrink-0 text-xs leading-none text-slate-300 select-none">⋮⋮</span>
       <p class="min-w-0 flex-1 text-sm break-words ${t.is_completed ? 'line-through text-slate-400' : ''}">${esc(t.task_name)}
         ${taskLabels(t, labels).length || activeSeriesOf(t) ? `<span class="mt-0.5 flex flex-wrap items-center gap-1">${labelChipsHTML(t)}${recurrenceBadgeHTML(t)}</span>` : ''}</p>
-      <span class="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-0.5">${fmtH(t.estimated_hours)}</span>
+      <span class="shrink-0 text-xs tabular-nums text-slate-500">${fmtH(t.estimated_hours)}</span>
       <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-slate-700 text-sm leading-none transition"
               data-edit="${t.id}" title="Modifier" aria-label="Modifier">✎</button>
       <button class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-slate-300 hover:text-red-500 text-base leading-none transition"
@@ -804,32 +814,65 @@ let sasView = 'project';
 try { if (localStorage.getItem(SAS_VIEW_KEY) === 'client') sasView = 'client'; } catch { /* stockage indisponible */ }
 let sasQuery = '';
 
-function folderHTML(p, { showClient }) {
-  const list = parkedTasks(tasks, p.id);
+const sasExpanded = new Set(); // projets dont toutes les tâches rangées sont affichées
+
+// Ligne d'un projet du sas : nom, type, Ouvrir / Archiver, liens rapides, temps, tâches rangées (3 visibles puis « + n autres »).
+function sasProjectHTML(p, list) {
+  const { shown, more } = parkedVisible(list, sasExpanded.has(p.id));
+  const ls = linksOf(p, links);
+  const toggle = more ? `+ ${more} autre${more > 1 ? 's' : ''}` : sasExpanded.has(p.id) && list.length > 3 ? 'Réduire' : '';
   return `
-    <li class="folder bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm cursor-grab active:cursor-grabbing" data-lot="Lot 3"
-        draggable="true" data-folder="${p.id}">
-      <div class="flex items-start gap-1">
-        <button class="min-w-0 flex-1 flex items-center gap-2 text-left" data-open="${p.id}" title="Ouvrir la page du projet">
-          ${showClient ? logoHTML(clients.find((c) => c.id === p.client_id) || p.clients, 'w-8 h-8 shrink-0') : ''}
-          <span class="min-w-0 flex-1" data-lot="Lot 17">
-            ${[showClient && p.clients.name, p.type].filter(Boolean).length
-              ? `<span class="block text-xs text-slate-500 truncate">${esc([showClient && p.clients.name, p.type].filter(Boolean).join(' · '))}</span>` : ''}
-            <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
-          </span>
-        </button>
+      <div class="flex items-center gap-2">
+        <button class="min-w-0 flex-1 text-left break-words text-sm font-medium" data-open="${p.id}" title="Ouvrir la page du projet">${esc(p.name)}</button>
+        ${p.type ? `<span class="shrink-0 text-xs text-slate-500" data-lot="Lot 17">${esc(p.type)}</span>` : ''}
         ${projectPendingHTML(p)}
-        <button class="text-xs text-slate-500 hover:text-slate-900 px-1.5 py-1 rounded transition" data-open="${p.id}" data-lot="Lot 31"
+        <button class="shrink-0 text-xs text-slate-500 hover:text-slate-900 px-1 py-1 rounded transition" data-open="${p.id}" data-lot="Lot 31"
                 title="Ouvrir la page du projet">Ouvrir</button>
-        <button class="text-xs text-slate-400 hover:text-slate-900 px-1.5 py-1 rounded transition" data-finish="${p.id}"
+        <button class="shrink-0 text-xs text-slate-400 hover:text-slate-900 px-1 py-1 rounded transition" data-finish="${p.id}"
                 title="Archiver le projet (terminé)">Archiver</button>
       </div>
-      ${linksOf(p, links).length ? `<div class="mt-1.5 flex flex-wrap gap-1" data-lot="Lot 31">${linksOf(p, links).map(clientLinkChip).join('')}</div>` : ''}
+      ${ls.length ? `<div class="mt-1.5 flex flex-wrap gap-1" data-lot="Lot 31">${ls.map(clientLinkChip).join('')}</div>` : ''}
       ${budgetHTML(p, list)}
-      <div class="mt-2 flex flex-col gap-1.5">
-        ${list.length ? list.map(parkedHTML).join('') : '<p class="text-xs text-slate-400">Aucune tâche rangée.</p>'}
+      <div class="mt-1 flex flex-col">
+        ${shown.length ? shown.map(parkedHTML).join('') : '<p class="px-1.5 py-1 text-xs text-slate-400">Aucune tâche rangée.</p>'}
+        ${toggle ? `<button type="button" data-sas-more="${p.id}" class="self-start px-1.5 py-1 text-xs text-slate-500 hover:text-slate-900 transition">${toggle}</button>` : ''}
+      </div>`;
+}
+
+// Vue Projets : une carte par projet, le client en en-tête.
+function folderHTML(p) {
+  const client = clients.find((c) => c.id === p.client_id) || p.clients;
+  return `
+    <li class="folder bg-white border border-slate-200 rounded-xl p-3 shadow-sm cursor-grab active:cursor-grabbing" data-lot="Lot 32"
+        draggable="true" data-folder="${p.id}">
+      <div class="mb-2 flex items-center gap-2">
+        ${logoHTML(client, 'w-8 h-8 shrink-0')}
+        <span class="min-w-0 flex-1 truncate text-xs font-medium text-slate-500">${esc(p.clients.name)}</span>
       </div>
+      ${sasProjectHTML(p, parkedTasks(tasks, p.id))}
     </li>`;
+}
+
+// Vue Clients : une carte par client, ses projets l'un sous l'autre.
+function clientFolderHTML(g) {
+  const sum = sasSummary(g.projects, tasks);
+  const client = clients.find((c) => c.id === g.client.id) || g.client;
+  const summary = [plural(sum.projects, 'projet'), sum.parked ? `${plural(sum.parked, 'tâche')} rangée${sum.parked > 1 ? 's' : ''} · ${fmtH(sum.hours)}` : 'aucune tâche rangée'].join(' · ');
+  return `
+      <li class="bg-white border border-slate-200 rounded-xl p-3 shadow-sm" data-lot="Lot 32">
+        <div class="flex items-center gap-2">
+          ${logoHTML(client, 'w-8 h-8 shrink-0')}
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-sm font-semibold">${esc(g.client.name)}</span>
+            <span class="block truncate text-xs text-slate-500">${summary}</span>
+          </span>
+          <a href="#clients/${g.client.id}" draggable="false" class="shrink-0 text-xs text-slate-500 hover:text-slate-900 px-1.5 py-1 rounded transition">Fiche →</a>
+        </div>
+        ${g.projects.map((p) => `
+        <div class="folder mt-2 pt-2 border-t border-slate-100 cursor-grab active:cursor-grabbing" draggable="true" data-folder="${p.id}">
+          ${sasProjectHTML(p, parkedTasks(tasks, p.id))}
+        </div>`).join('')}
+      </li>`;
 }
 
 // Temps effectif / estimé d'un projet du sas : « 12 h / 40 h » et une fine barre (ambre au-delà de l'estimé).
@@ -857,7 +900,8 @@ function projectPendingHTML(p) {
 // Sas d'attente : projets en cours sans tâche planifiée dans la semaine, ou ayant des tâches rangées dans leur dossier.
 function renderWaiting() {
   const waiting = filterProjects(sortFolders(waitingProjects(projects, tasks)), sasQuery);
-  $('#waiting-count').textContent = waiting.length;
+  const groups = sasView === 'client' ? groupByClient(waiting) : [];
+  $('#waiting-count').textContent = sasView === 'client' && waiting.length ? `${plural(groups.length, 'client')} · ${plural(waiting.length, 'projet')}` : plural(waiting.length, 'projet');
   document.querySelectorAll('[data-sas-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sasView === sasView)));
   let html;
   if (!waiting.length) {
@@ -865,17 +909,9 @@ function renderWaiting() {
       ? 'Aucun projet du sas ne correspond à la recherche.'
       : 'Tous les projets en cours ont au moins une tâche cette semaine.'}</li>`;
   } else if (sasView === 'client') {
-    html = groupByClient(waiting).map((g) => `
-      <li data-lot="Lot 9">
-        <h3 class="flex items-center gap-2 px-1 pb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          ${logoHTML(clients.find((c) => c.id === g.client.id) || g.client, 'w-5 h-5 shrink-0')}
-          <span class="truncate">${esc(g.client.name)}</span>
-          <span class="font-medium tabular-nums">${g.projects.length}</span>
-        </h3>
-        <ul class="grid grid-cols-1 gap-2">${g.projects.map((p) => folderHTML(p, { showClient: false })).join('')}</ul>
-      </li>`).join('');
+    html = groups.map(clientFolderHTML).join('');
   } else {
-    html = waiting.map((p) => folderHTML(p, { showClient: true })).join('');
+    html = waiting.map(folderHTML).join('');
   }
   $('#waiting-list').innerHTML = html;
   renderSasResults();
@@ -1861,6 +1897,11 @@ editForm.addEventListener('submit', async (e) => {
 // Sas d'attente
 $('#waiting').addEventListener('click', (e) => {
   if (openResult(e.target)) return;
+  const moreId = e.target.closest('[data-sas-more]')?.dataset.sasMore;
+  if (moreId) {
+    if (sasExpanded.has(moreId)) sasExpanded.delete(moreId); else sasExpanded.add(moreId);
+    return renderWaiting();
+  }
   const openId = e.target.closest('[data-open]')?.dataset.open;
   const finishId = e.target.closest('[data-finish]')?.dataset.finish;
   if (openId) {
@@ -2193,6 +2234,16 @@ function reopenProject(id) {
   if (open) goProject(open);
 }));
 
+// Création d'un projet depuis le sas : le formulaire s'ouvre au clic sur « + Projet ».
+const sasForm = $('#project-form');
+function toggleSasForm(open) {
+  sasForm.classList.toggle('hidden', !open);
+  $('#sas-new-toggle').setAttribute('aria-expanded', String(open));
+  if (open) sasForm.client_name.focus(); else sasForm.reset();
+}
+$('#sas-new-toggle').addEventListener('click', () => toggleSasForm(sasForm.classList.contains('hidden')));
+$('#sas-new-cancel').addEventListener('click', () => toggleSasForm(false));
+
 $('#project-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
@@ -2209,7 +2260,7 @@ $('#project-form').addEventListener('submit', (e) => {
       await api('projects', `?id=eq.${p.id}`, { method: 'PATCH', body: { estimated_hours: hours } });
       p.estimated_hours = hours;
     }
-    f.reset();
+    toggleSasForm(false);
     render();
   });
 });
@@ -3690,7 +3741,7 @@ const TOURS = {
         content: 'Écris directement sur une carte (Entrée pour l’ajouter) : c’est une simple note. Active « À traiter » pour créer un point à cocher ; le compteur ambre indique ceux qui restent à traiter. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },
       { id: 'waiting', targetSelector: '#waiting', placement: 'top', lot: 'Lot 22',
         title: 'Le sas d’attente',
-        content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées et leur temps effectif face au temps estimé. Glisse un projet sur un jour pour le planifier, ou clique dessus pour voir son détail, régler son estimé et le renommer.' },
+        content: 'Les projets en cours sans tâche cette semaine attendent ici, avec leurs tâches rangées et leur temps effectif face au temps estimé. Glisse un projet sur un jour pour le planifier, ou clique sur son nom pour ouvrir sa page, ou sur « + Projet » pour en créer un.' },
       { id: 'sas-search', targetSelector: '#sas-search', placement: 'top', lot: 'Lot 9',
         title: 'Recherche rapide',
         content: 'Tape un client ou un projet pour filtrer le sas et ouvrir sa fiche d’un clic (Entrée ouvre le premier résultat). Le bouton Clients regroupe le sas par client.' },
