@@ -299,10 +299,18 @@ describe('newWeek', () => {
     assert.equal(res.history[0].archived_at, at);
   });
 
-  test('les tâches ouvertes planifiées reviennent sur Lundi', () => {
-    const res = L.newWeek([task({ id: 'a', day_of_week: 'Vendredi' }), task({ id: 'b', day_of_week: 'Lundi' })], [], at);
-    assert.deepEqual(res.tasks.map((t) => t.day_of_week), ['Lundi', 'Lundi']);
-    assert.equal(res.moving, 1); // seule la tâche hors Lundi est déplacée
+  test('les tâches ouvertes planifiées prennent le jour choisi (Lot 33)', () => {
+    const tasks = [task({ id: 'a', day_of_week: 'Vendredi' }), task({ id: 'b', day_of_week: 'Lundi' }), task({ id: 'c', day_of_week: 'Mardi' })];
+    const res = L.newWeek(tasks, [], at, [], [], { a: 'Lundi', b: 'Lundi', c: 'Jeudi' });
+    assert.deepEqual(res.tasks.map((t) => t.day_of_week), ['Lundi', 'Lundi', 'Jeudi']);
+    assert.equal(res.moving, 2); // b garde son jour : seules a et c sont déplacées
+  });
+
+  test('sans jour choisi, ou avec un jour inconnu, la tâche repart dans le sas (Lot 33)', () => {
+    const tasks = [task({ id: 'a', day_of_week: 'Vendredi' }), task({ id: 'b', day_of_week: 'Mardi' }), task({ id: 'c', day_of_week: 'Mercredi' })];
+    const res = L.newWeek(tasks, [], at, [], [], { b: null, c: 'Samedi' });
+    assert.deepEqual(res.tasks.map((t) => t.day_of_week), [null, null, null]);
+    assert.equal(res.moving, 3);
   });
 
   test('les tâches rangées dans le sas restent sans jour', () => {
@@ -556,10 +564,10 @@ describe('groupByClient', () => {
 describe('newWeek (tâches gardées)', () => {
   const at = '2026-10-12T08:00:00.000Z';
 
-  test('une tâche terminée gardée reste dans le planning, ramenée sur Lundi', () => {
+  test('une tâche terminée gardée reste dans le planning, sur le jour choisi', () => {
     const kept = task({ id: 'k', is_completed: true, day_of_week: 'Jeudi' });
     const gone = task({ id: 'g', is_completed: true, day_of_week: 'Mardi' });
-    const res = L.newWeek([kept, gone], [], at, ['k']);
+    const res = L.newWeek([kept, gone], [], at, ['k'], [], { k: 'Lundi' });
     assert.equal(res.finished, 1);
     assert.deepEqual(res.history.map((t) => t.id), ['g']);
     assert.deepEqual(res.tasks.map((t) => [t.id, t.day_of_week, t.is_completed]), [['k', 'Lundi', true]]);
@@ -979,7 +987,7 @@ describe('récurrences : règles', () => {
 
 describe('newWeek (occurrences récurrentes)', () => {
   test('une occurrence récurrente non terminée reste sur son jour', () => {
-    const res = L.newWeek([task({ id: 'r', day_of_week: 'Jeudi' }), task({ id: 'n', day_of_week: 'Jeudi' })], [], 'x', [], ['r']);
+    const res = L.newWeek([task({ id: 'r', day_of_week: 'Jeudi' }), task({ id: 'n', day_of_week: 'Jeudi' })], [], 'x', [], ['r'], { n: 'Lundi' });
     assert.deepEqual(res.tasks.map((t) => [t.id, t.day_of_week]), [['r', 'Jeudi'], ['n', 'Lundi']]);
     assert.equal(res.moving, 1);
   });
@@ -988,6 +996,38 @@ describe('newWeek (occurrences récurrentes)', () => {
     const res = L.newWeek([task({ id: 'r', is_completed: true, day_of_week: 'Jeudi' })], [], 'x', [], ['r']);
     assert.equal(res.finished, 1);
     assert.deepEqual(res.tasks, []);
+  });
+});
+
+describe('Nouvelle semaine : répartition des tâches restantes (Lot 33)', () => {
+  test('carryOver : tâches planifiées non archivées, hors occurrences hebdomadaires non terminées', () => {
+    const tasks = [
+      task({ id: 'a', day_of_week: 'Mardi' }),
+      task({ id: 'sas', day_of_week: null }),
+      task({ id: 'done', day_of_week: 'Mercredi', is_completed: true }),
+      task({ id: 'kept', day_of_week: 'Jeudi', is_completed: true }),
+      task({ id: 'weekly', day_of_week: 'Vendredi' }),
+    ];
+    assert.deepEqual(L.carryOver(tasks, ['kept'], ['weekly']).map((t) => t.id), ['a', 'kept']);
+  });
+
+  test('carryOver : une occurrence hebdomadaire terminée est archivée, pas reportée', () => {
+    const tasks = [task({ id: 'w', day_of_week: 'Lundi', is_completed: true })];
+    assert.deepEqual(L.carryOver(tasks, [], ['w']), []);
+  });
+
+  test('weekRankPatches : les conteneurs gardent leur ordre d’origine dans le jour qui les reçoit', () => {
+    const acme = { id: 'c-Acme', name: 'Acme' };
+    const beta = { id: 'c-Beta', name: 'Beta' };
+    const inClient = (id, day, c, rank) => task({ id, day_of_week: day, group_rank: rank, projects: { id: 'p', name: 'P', clients: c } });
+    const before = [inClient('b1', 'Lundi', beta, 1), inClient('a1', 'Mardi', acme, 1)];
+    const after = before.map((t) => ({ ...t, day_of_week: 'Jeudi' }));
+    assert.deepEqual(L.weekRankPatches(before, after, []), [{ ids: ['a1'], rank: 2 }]);
+  });
+
+  test('weekRankPatches : rien à faire pour un jour qui ne reçoit aucune tâche', () => {
+    const before = [task({ id: 'x', day_of_week: 'Lundi', group_rank: 3 })];
+    assert.deepEqual(L.weekRankPatches(before, before, []), []);
   });
 });
 

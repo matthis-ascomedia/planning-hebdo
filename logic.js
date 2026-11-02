@@ -242,24 +242,46 @@
     return { estimated: est, spent, pct: Math.min(100, Math.round((spent / est) * 100)), over: spent > est };
   }
 
-  // « Nouvelle Semaine » : terminées -> historique ; les autres planifiées reviennent sur Lundi ;
-  // les tâches du sas (sans jour) restent rangées. `keepIds` : tâches terminées gardées dans le
-  // planning (commentaires non traités), traitées comme des tâches reportées. Ne modifie pas les tableaux reçus.
-  // `stayIds` : occurrences de tâches récurrentes qui, non terminées, restent sur leur jour au lieu de Lundi.
-  function newWeek(tasks, history, archivedAt, keepIds = [], stayIds = []) {
+  // « Nouvelle Semaine » : terminées -> historique ; les autres planifiées prennent le jour que l'utilisateur
+  // leur a choisi (`assign`, id -> jour), ou repartent dans le sas sans jour valide ; les tâches du sas (sans
+  // jour) restent rangées. `keepIds` : tâches terminées gardées dans le planning (commentaires non traités),
+  // traitées comme des tâches reportées. Ne modifie pas les tableaux reçus.
+  // `stayIds` : occurrences de séries hebdomadaires qui, non terminées, restent sur leur jour.
+  function newWeek(tasks, history, archivedAt, keepIds = [], stayIds = [], assign = {}) {
     const kept = new Set(keepIds);
     const stay = new Set(stayIds);
     const archived = (t) => t.is_completed && !kept.has(t.id);
     const moves = (t) => t.day_of_week && !(stay.has(t.id) && !t.is_completed);
+    const target = (t) => (DAYS.includes(assign[t.id]) ? assign[t.id] : null);
     const finished = tasks.filter(archived);
     const staying = tasks.filter((t) => !archived(t));
-    const moving = staying.filter((t) => moves(t) && t.day_of_week !== 'Lundi').length;
+    const moving = staying.filter((t) => moves(t) && target(t) !== t.day_of_week).length;
     return {
       finished: finished.length,
       moving,
       history: finished.map((t) => ({ ...t, archived_at: archivedAt })).concat(history),
-      tasks: staying.map((t) => (moves(t) ? { ...t, day_of_week: 'Lundi' } : t)),
+      tasks: staying.map((t) => (moves(t) ? { ...t, day_of_week: target(t) } : t)),
     };
+  }
+
+  // Tâches dont le jour est à choisir à « Nouvelle Semaine » : planifiées, non archivées, et qui ne restent pas en place.
+  function carryOver(tasks, keepIds = [], stayIds = []) {
+    const kept = new Set(keepIds);
+    const stay = new Set(stayIds);
+    return tasks.filter((t) => t.day_of_week && !(t.is_completed && !kept.has(t.id)) && !(stay.has(t.id) && !t.is_completed));
+  }
+
+  // Rangs des conteneurs après « Nouvelle Semaine » : chaque jour qui reçoit des tâches est renuméroté selon l'ordre
+  // d'origine (Lundi d'abord, puis Mardi…), pour que les conteneurs gardent leur place relative.
+  function weekRankPatches(before, after, labels) {
+    const order = mergeOrder(DAYS.map((d) => groupDay(before.filter((t) => t.day_of_week === d), labels).map((g) => g.key)));
+    const was = new Map(before.map((t) => [t.id, t.day_of_week]));
+    return DAYS
+      .filter((d) => after.some((t) => t.day_of_week === d && was.get(t.id) !== d))
+      .flatMap((d) => {
+        const groups = groupDay(after.filter((t) => t.day_of_week === d), labels);
+        return rankPatches(order.map((k) => groups.find((g) => g.key === k)).filter(Boolean));
+      });
   }
 
   // ---- Tâches récurrentes (séries) ----
@@ -999,7 +1021,7 @@ ${String(note ?? '').trim()}`;
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
     comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
-    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+    extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
     initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview, sasSummary, parkedVisible,

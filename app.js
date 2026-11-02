@@ -9,7 +9,7 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
   comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
-  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, normalizeTask, routeOf, routeParam, buildLabel,
+  extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
@@ -28,6 +28,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.33.0', type: 'mineure', lot: 'Lot 33', date: '2026-11-02',
+    items: [
+      '« Nouvelle semaine » ne ramène plus les tâches non terminées sur Lundi : après « Archiver et continuer », un nouvel écran te laisse choisir un jour pour chacune.',
+      'Chaque tâche est proposée sur son jour actuel ; choisis « Sas d’attente » pour la ranger dans le sas. Rien n’est archivé tant que tu n’as pas validé cet écran.',
+      'Les occurrences de tâches récurrentes hebdomadaires non terminées restent sur leur jour, sans passer par l’écran. Les occurrences mensuelles y apparaissent comme les autres tâches.',
+    ],
+  },
   {
     version: '1.32.0', type: 'mineure', lot: 'Lot 32', date: '2026-10-29',
     items: [
@@ -1657,28 +1665,32 @@ function prefillAdd(project, day) {
 }
 
 // Nouvelle semaine
-// Archive les tâches terminées (sauf `keepIds`, gardées dans le planning) et ramène le reste sur Lundi.
-// La semaine n'est enregistrée (instantané + rattachement des tâches) que si au moins une tâche est archivée.
-function startNewWeek(keepIds = []) {
+// Archive les tâches terminées (sauf `keepIds`, gardées dans le planning) ; les autres tâches planifiées prennent
+// le jour de `assign` (id -> jour), ou repartent dans le sas sans jour. Les occurrences hebdomadaires non terminées
+// restent sur leur jour. La semaine n'est enregistrée (instantané + rattachement des tâches) que si au moins une
+// tâche est archivée.
+const weeklyStayIds = () => tasks.filter((t) => !t.is_completed && t.day_of_week && activeSeriesOf(t)?.frequency === 'weekly').map((t) => t.id);
+
+function startNewWeek(keepIds = [], assign = {}) {
   const now = new Date();
   const archivedAt = now.toISOString();
   const waitingConsigned = consignedPending(history); // consignées depuis la dernière clôture : comptées dans cette semaine
   const stats = weekSnapshot(tasks, keepIds, waitingConsigned);
-  // Occurrences récurrentes non terminées : elles restent sur leur jour.
-  const stayIds = tasks.filter((t) => !t.is_completed && t.day_of_week && activeSeriesOf(t)).map((t) => t.id);
-  const next = newWeek(tasks, history, archivedAt, keepIds, stayIds);
+  const stayIds = weeklyStayIds();
+  const next = newWeek(tasks, history, archivedAt, keepIds, stayIds, assign);
   const due = dueOccurrences(recurrences, next.tasks, comingMonday(now)).map(occurrenceRow).filter(Boolean);
   const keep = keepIds.length ? `&id=not.in.(${keepIds.join(',')})` : '';
-  const stay = stayIds.length ? `&id=not.in.(${stayIds.join(',')})` : '';
   const snapshot = { tasks, history, weeks };
-  const dayOrder = mergeOrder(DAYS.map((d) => groupDay(tasks.filter((t) => t.day_of_week === d), labels).map((g) => g.key)));
+  // Tâches qui changent de jour, regroupées par jour d'arrivée (null : le sas).
+  const before = new Map(tasks.map((t) => [t.id, t.day_of_week]));
+  const arrivals = new Map();
+  next.tasks.filter((t) => before.has(t.id) && before.get(t.id) !== t.day_of_week).forEach((t) => {
+    arrivals.set(t.day_of_week, [...(arrivals.get(t.day_of_week) ?? []), t.id]);
+  });
+  // Conteneurs renumérotés dans chaque jour qui reçoit des tâches, selon leur ordre d'origine.
+  const rankChanges = weekRankPatches(tasks, next.tasks, labels);
   ({ tasks, history } = next);
-  // Lundi : conteneurs renumérotés selon leur ordre d'origine (Lundi d'abord, puis Mardi…).
-  const monday = groupDay(tasks.filter((t) => t.day_of_week === 'Lundi'), labels);
-  const mondayPatches = next.moving
-    ? rankPatches(dayOrder.map((k) => monday.find((g) => g.key === k)).filter(Boolean))
-    : [];
-  mondayPatches.forEach((p) => p.ids.forEach((id) => { tasks.find((t) => t.id === id).group_rank = p.rank; }));
+  rankChanges.forEach((p) => p.ids.forEach((id) => { tasks.find((t) => t.id === id).group_rank = p.rank; }));
   render();
   let week = null;
   run(
@@ -1697,13 +1709,10 @@ function startNewWeek(keepIds = []) {
         waitingConsigned.forEach((t) => { t.week_id = week.id; });
         render();
       }
-      if (next.moving) {
-        await api('tasks', `?is_completed=eq.false&archived_at=is.null&day_of_week=not.is.null${stay}`, { method: 'PATCH', body: { day_of_week: 'Lundi' } });
-        if (keepIds.length) {
-          await api('tasks', `?id=in.(${keepIds.join(',')})&day_of_week=not.is.null`, { method: 'PATCH', body: { day_of_week: 'Lundi' } });
-        }
-        for (const p of mondayPatches) await api('tasks', `?id=in.(${p.ids.join(',')})`, { method: 'PATCH', body: { group_rank: p.rank } });
+      for (const [day, ids] of arrivals) {
+        await api('tasks', `?id=in.(${ids.join(',')})`, { method: 'PATCH', body: { day_of_week: day } });
       }
+      for (const p of rankChanges) await api('tasks', `?id=in.(${p.ids.join(',')})`, { method: 'PATCH', body: { group_rank: p.rank } });
       if (due.length) {
         const created = await db.insert(due);
         tasks = tasks.concat(created);
@@ -1720,7 +1729,52 @@ function startNewWeek(keepIds = []) {
 }
 
 const weekDialog = $('#week-dialog');
+const carryDialog = $('#carry-dialog');
+const carryForm = $('#carry-form');
 let weekPending = [];
+
+// Choix du jour des tâches restantes (Lot 25) : rien n'est archivé avant la validation de cet écran.
+// Sans tâche à répartir, la nouvelle semaine démarre directement.
+function chooseCarryDays(keepIds = []) {
+  const carry = carryOver(tasks, keepIds, weeklyStayIds());
+  if (!carry.length) return startNewWeek(keepIds);
+  const byDay = (t) => DAYS.indexOf(t.day_of_week);
+  const sorted = [...carry].sort((a, b) => byDay(a) - byDay(b));
+  const options = (current) => DAYS.map((d) => `<option value="${d}"${d === current ? ' selected' : ''}>${d}</option>`).join('')
+    + '<option value="">Sas d’attente</option>';
+  $('#carry-list').innerHTML = sorted.map((t) => `
+    <li class="flex items-center gap-2 px-3 py-2 text-sm">
+      <span class="min-w-0 flex-1"><span class="block truncate font-medium">${esc(t.task_name)}${t.is_completed ? ' <span class="text-xs font-normal text-slate-500">(terminée)</span>' : ''}</span>
+        <span class="block truncate text-xs text-slate-500">${esc(taskClient(t))} · ${esc(taskProject(t))}</span></span>
+      <select data-carry="${esc(t.id)}" aria-label="Jour de « ${esc(t.task_name)} »"
+        class="shrink-0 text-sm rounded-lg border border-slate-200 bg-white px-2 py-1.5">${options(t.day_of_week)}</select>
+    </li>`).join('');
+  carryDialog.dataset.keep = keepIds.join(',');
+  updateCarrySummary();
+  carryDialog.showModal();
+}
+
+function carryChoices() {
+  return Object.fromEntries([...carryForm.querySelectorAll('select[data-carry]')].map((s) => [s.dataset.carry, s.value || null]));
+}
+
+function updateCarrySummary() {
+  const sas = Object.values(carryChoices()).filter((d) => !d).length;
+  $('#carry-summary').textContent = sas
+    ? `${sas} tâche${sas > 1 ? 's' : ''} retourn${sas > 1 ? 'ent' : 'e'} dans le sas d’attente.`
+    : 'Toutes les tâches restent planifiées cette semaine.';
+}
+
+carryForm.addEventListener('change', updateCarrySummary);
+carryForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const keepIds = carryDialog.dataset.keep ? carryDialog.dataset.keep.split(',') : [];
+  const assign = carryChoices();
+  carryDialog.close();
+  startNewWeek(keepIds, assign);
+});
+$('#carry-cancel').addEventListener('click', () => carryDialog.close());
+carryDialog.addEventListener('click', (e) => { if (e.target === carryDialog) carryDialog.close(); });
 
 $('#new-week').addEventListener('click', () => {
   weekPending = finishedWithPending(tasks, comments);
@@ -1731,11 +1785,13 @@ $('#new-week').addEventListener('click', () => {
     const recorded = finished || consigned;
     const parts = [finished && `archiver ${plural(finished, 'tâche')} terminée${s(finished)}`,
       consigned && `compter ${plural(consigned, 'tâche')} déjà consignée${s(consigned)}`].filter(Boolean);
+    const rest = carryOver(tasks, [], weeklyStayIds()).length;
+    const restText = rest ? `choisir un jour pour ${plural(rest, 'tâche')} restante${s(rest)}` : '';
     const question = recorded
-      ? `Nouvelle semaine : ${parts.join(' et ')}, enregistrer la semaine dans l’historique et ramener les autres sur Lundi ?`
-      : 'Aucune tâche terminée : rien à archiver, aucune semaine ne sera enregistrée. Ramener les tâches planifiées sur Lundi ?';
-    askConfirm({ title: 'Nouvelle semaine', message: question, confirmLabel: recorded ? 'Archiver et continuer' : 'Ramener sur Lundi' })
-      .then((ok) => { if (ok) startNewWeek(); });
+      ? `Nouvelle semaine : ${parts.join(' et ')}, enregistrer la semaine dans l’historique${restText ? ` puis ${restText}` : ''} ?`
+      : `Aucune tâche terminée : rien à archiver, aucune semaine ne sera enregistrée.${restText ? ` Tu vas pouvoir ${restText}.` : ''} Continuer ?`;
+    askConfirm({ title: 'Nouvelle semaine', message: question, confirmLabel: recorded ? 'Archiver et continuer' : 'Continuer' })
+      .then((ok) => { if (ok) chooseCarryDays(); });
     return;
   }
   $('#week-pending').innerHTML = weekPending.map(({ task: t, count }) => `
@@ -1755,8 +1811,8 @@ $('#new-week').addEventListener('click', () => {
 
 weekDialog.addEventListener('click', (e) => { if (e.target === weekDialog) weekDialog.close(); });
 $('#week-cancel').addEventListener('click', () => weekDialog.close());
-$('#week-archive').addEventListener('click', () => { weekDialog.close(); startNewWeek(); });
-$('#week-keep').addEventListener('click', () => { weekDialog.close(); startNewWeek(weekPending.map((x) => x.task.id)); });
+$('#week-archive').addEventListener('click', () => { weekDialog.close(); chooseCarryDays(); });
+$('#week-keep').addEventListener('click', () => { weekDialog.close(); chooseCarryDays(weekPending.map((x) => x.task.id)); });
 
 $('#toggle-links').addEventListener('click', () => {
   showLinks = !showLinks;
@@ -3732,7 +3788,7 @@ const TOURS = {
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },
       { id: 'recurrence', targetSelector: '#add-form [data-recurrence-fields]', placement: 'bottom', lot: 'Lot 15',
         title: 'Tâches récurrentes',
-        content: 'Choisis « Chaque semaine » ou « Chaque mois » (ex. le 1ᵉʳ mardi) : « Nouvelle Semaine » recréera la tâche quand il le faut. Une occurrence non faite reste sur son jour. Les séries se retrouvent dans Réglages.' },
+        content: 'Choisis « Chaque semaine » ou « Chaque mois » (ex. le 1ᵉʳ mardi) : « Nouvelle Semaine » recréera la tâche quand il le faut. Une occurrence hebdomadaire non faite reste sur son jour. Les séries se retrouvent dans Réglages.' },
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
         content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée : elle passe sous les tâches à faire.' },
@@ -3757,9 +3813,9 @@ const TOURS = {
       { id: 'settings', targetSelector: '#tab-settings', placement: 'bottom', lot: 'Lot 13',
         title: 'Les réglages',
         content: 'Définis ici les types de projet par défaut et leur ordre. Ils sont proposés en premier dans le détail d’un projet, avant les types saisis librement.' },
-      { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 4',
+      { id: 'new-week', targetSelector: '#new-week', placement: 'bottom', lot: 'Lot 33',
         title: 'Nouvelle semaine',
-        content: 'Les tâches terminées sont archivées (le temps passé est conservé), la semaine est enregistrée dans l’onglet Historique et les autres tâches reviennent sur Lundi.' },
+        content: 'Les tâches terminées sont archivées (le temps passé est conservé) et la semaine est enregistrée dans l’onglet Historique. Un écran te laisse ensuite choisir un jour pour chaque tâche restante, ou la renvoyer dans le sas ; les récurrences hebdomadaires gardent leur jour.' },
       { id: 'gcal', targetSelector: '#import-gcal', placement: 'bottom', lot: 'Lot 19',
         title: 'Google Agenda',
         content: 'Importe les réunions visio de la semaine depuis ton agenda : tu valides chaque réunion et son projet ; une réunion déjà saisie au même créneau reçoit simplement son lien.' },
