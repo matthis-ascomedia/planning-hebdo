@@ -27,6 +27,18 @@
       content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
       border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
     }
+    /* Suggestions de tâches (Lot 34) : colonnes alignées avec en-têtes dès que la liste est assez large ; en dessous, lignes qui se replient. */
+    #suggest-main { container-type: inline-size; }
+    #suggest-list .sugg-head { display: none; }
+    @container (min-width: 44rem) {
+      #suggest-list .sugg-head, #suggest-list .sugg-row {
+        display: grid; grid-template-columns: 1.25rem minmax(0, 1fr) 12rem 4.75rem 8.25rem 6.75rem; column-gap: .75rem; align-items: start;
+      }
+      #suggest-list .sugg-head { align-items: center; position: sticky; top: 0; z-index: 1; }
+      #suggest-list .sugg-ctl { display: contents; }
+      #suggest-list .sugg-ctl > * { width: 100%; max-width: none; min-width: 0; }
+      #suggest-list .sugg-ctl > span:last-child { width: auto; justify-self: start; }
+    }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-900 min-h-screen antialiased">
@@ -671,8 +683,24 @@
         </div>
         <button type="button" id="suggest-close" class="text-slate-400 hover:text-slate-900 text-xl leading-none" aria-label="Fermer">×</button>
       </div>
-      <p id="suggest-status" role="status" class="flex items-center gap-2 text-sm text-slate-600"></p>
-      <ul id="suggest-list" class="hidden max-h-[60vh] overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100"></ul>
+      <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <p id="suggest-status" role="status" class="flex items-center gap-2 text-sm text-slate-600"></p>
+        <button type="button" id="suggest-planning" aria-expanded="false" aria-controls="suggest-planning-panel" data-lot="Lot 34"
+          class="shrink-0 px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Voir le planning</button>
+      </div>
+      <div class="flex flex-col lg:flex-row gap-4 items-start">
+        <div id="suggest-main" class="min-w-0 w-full flex-1">
+          <ul id="suggest-list" class="hidden max-h-[60vh] overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100"></ul>
+        </div>
+        <aside id="suggest-planning-panel" aria-label="Planning de la semaine" data-lot="Lot 34"
+          class="hidden w-full lg:w-72 lg:shrink-0 max-h-[60vh] overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
+          <div>
+            <h3 id="suggest-planning-title" class="text-sm font-semibold"></h3>
+            <p class="text-xs text-slate-500">Lecture seule. Les suggestions retenues avec un jour apparaissent en couleur.</p>
+          </div>
+          <div id="suggest-planning-days" class="space-y-2"></div>
+        </aside>
+      </div>
       <div class="flex flex-wrap items-center justify-end gap-2">
         <p class="mr-auto text-xs text-slate-500">Rien n’est créé sans validation. Les nouvelles tâches vont dans le sas, sauf si tu choisis un jour.</p>
         <button type="button" id="suggest-cancel" class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-100 transition">Annuler</button>

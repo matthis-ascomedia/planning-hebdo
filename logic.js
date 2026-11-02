@@ -549,8 +549,21 @@ ${String(note ?? '').trim()}`;
     }).filter(Boolean);
   }
 
+  // Planning de la semaine, lundi → vendredi, avec l'effet des suggestions retenues (Lot 34) : par jour, les tâches
+  // déjà planifiées (`existing`), les suggestions à créer ou à planifier ce jour-là (`added`, heures en nombre) et
+  // le total d'heures. Comme sur le tableau, les terminées comptent. Sans jour (sas) ou déjà planifiée : rien à ajouter.
+  function planningPreview(tasks, suggestions, labels) {
+    const hours = (v) => { const n = Number(String(v ?? '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : 0; };
+    const added = suggestions.filter((s) => s.picked && s.kind !== 'planned' && DAYS.includes(s.day)).map((s) => ({ ...s, hours: hours(s.hours) }));
+    return DAYS.map((day) => {
+      const existing = sortDay(tasks.filter((t) => t.day_of_week === day), labels);
+      const extra = added.filter((s) => s.day === day);
+      return { day, existing, added: extra, hours: sumHours(existing) + extra.reduce((sum, s) => sum + s.hours, 0) };
+    });
+  }
+
   // Rang d'un jour dans son mois : 1 à 4, ou 5 pour un 5ᵉ (toujours le dernier).
-  const monthlyRank = (date) => Math.ceil(date.getDate() / 7);
+  const monthlyRank =(date) => Math.ceil(date.getDate() / 7);
   const isLastOfMonth = (date) => addDays(date, 7).getMonth() !== date.getMonth();
 
   // La série a-t-elle une occurrence dans la semaine du lundi `monday` ? (monthly_rank 5 = dernier du mois)
@@ -1020,7 +1033,7 @@ ${String(note ?? '').trim()}`;
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

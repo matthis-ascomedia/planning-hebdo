@@ -1705,3 +1705,45 @@ describe('sas d’attente (lot 32)', () => {
     assert.deepEqual(L.parkedVisible([]), { shown: [], more: 0 });
   });
 });
+
+describe('planning avec l’effet des suggestions (lot 34)', () => {
+  const tasks = [
+    task({ id: 'm', day_of_week: 'Lundi', estimated_hours: 2 }),
+    task({ id: 'v', day_of_week: 'Vendredi', estimated_hours: 1, is_completed: true }),
+    task({ id: 'sas', day_of_week: null, estimated_hours: 3 }),
+  ];
+  const sugg = (over) => ({ kind: 'new', picked: true, task_name: 'Nouvelle', hours: 1, day: 'Mardi', ...over });
+  const byDay = (preview, day) => preview.find((d) => d.day === day);
+
+  test('sans suggestion : les cinq jours avec leurs tâches et leur total', () => {
+    const p = L.planningPreview(tasks, [], []);
+    assert.deepEqual(p.map((d) => d.day), L.DAYS);
+    assert.deepEqual(byDay(p, 'Lundi').existing.map((t) => t.id), ['m']);
+    assert.equal(byDay(p, 'Lundi').hours, 2);
+    assert.equal(byDay(p, 'Vendredi').hours, 1); // les terminées comptent comme sur le tableau
+    assert.deepEqual([byDay(p, 'Mercredi').existing, byDay(p, 'Mercredi').added, byDay(p, 'Mercredi').hours], [[], [], 0]);
+  });
+
+  test('une suggestion retenue avec un jour s’ajoute à ce jour et à son total', () => {
+    const p = L.planningPreview(tasks, [sugg({ hours: '1,5' }), sugg({ task_name: 'Autre', day: 'Lundi', hours: 0.5 })], []);
+    assert.deepEqual(byDay(p, 'Mardi').added.map((a) => [a.task_name, a.hours]), [['Nouvelle', 1.5]]);
+    assert.equal(byDay(p, 'Mardi').hours, 1.5);
+    assert.equal(byDay(p, 'Lundi').hours, 2.5);
+  });
+
+  test('ignorées : décochées, sans jour (sas), déjà planifiées, heures invalides comptées pour 0', () => {
+    const p = L.planningPreview(tasks, [
+      sugg({ picked: false }), sugg({ day: '' }), sugg({ kind: 'planned', day: 'Jeudi' }), sugg({ day: 'Jeudi', hours: 'abc' }),
+    ], []);
+    assert.deepEqual(p.map((d) => d.added.length), [0, 0, 0, 1, 0]);
+    assert.equal(byDay(p, 'Jeudi').hours, 0);
+    assert.equal(byDay(p, 'Mardi').hours, 0);
+  });
+
+  test('une tâche du sas à planifier apparaît le jour choisi, sans doublon', () => {
+    const p = L.planningPreview(tasks, [sugg({ kind: 'plan', taskId: 'sas', task_name: 'Du sas', hours: 3, day: 'Mercredi' })], []);
+    assert.deepEqual(byDay(p, 'Mercredi').added.map((a) => a.taskId), ['sas']);
+    assert.equal(byDay(p, 'Mercredi').hours, 3);
+    assert.ok(p.every((d) => !d.existing.some((t) => t.id === 'sas')));
+  });
+});

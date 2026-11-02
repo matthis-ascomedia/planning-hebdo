@@ -8,7 +8,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, monthlyRank, dueOccurrences, recurrenceLabel,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -28,6 +28,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.34.0', type: 'mineure', lot: 'Lot 34', date: '2026-11-02',
+    items: [
+      'Suggestions de tâches : la liste est alignée en colonnes (Tâche, Projet, Heures, Jour, Statut) sous des en-têtes, pour comparer les lignes d’un coup d’œil.',
+      'Nouveau bouton « Voir le planning » : un panneau en lecture seule affiche Lundi → Vendredi avec les tâches et le total d’heures de chaque jour.',
+      'Les suggestions retenues avec un jour apparaissent en couleur dans ce panneau (vert : nouvelle tâche, bleu : tâche du sas) et les totaux se mettent à jour quand tu coches, changes de jour ou d’heures.',
+    ],
+  },
   {
     version: '1.33.0', type: 'mineure', lot: 'Lot 33', date: '2026-11-02',
     items: [
@@ -3522,6 +3530,7 @@ function showSuggestions(raw, extra = []) {
   suggItems = reviewSuggestions(raw, projects, tasks).map((it) => ({ ...it, picked: it.kind !== 'planned' })).concat(extra);
   $('#suggest-week').textContent = `D’après le bloc-notes de la ${weekTitle(noteWeek).toLowerCase()}`;
   suggestDialog.showModal();
+  setSuggestPlanning(false);
   renderSuggestions();
 }
 
@@ -3538,13 +3547,16 @@ function renderSuggestions() {
   };
   const dayOptions = (it) => (it.kind === 'new' ? `<option value="" ${it.day ? '' : 'selected'}>Sas d’attente</option>` : '')
     + DAYS.map((d) => `<option ${d === it.day ? 'selected' : ''}>${d}</option>`).join('');
-  $('#suggest-list').innerHTML = suggItems.map((it, i) => {
+  // Quatre cellules par ligne (projet, heures, jour, statut), alignées sous les en-têtes quand la liste est assez large.
+  const head = `<li class="sugg-head gap-x-3 px-3 py-2 bg-slate-50 border-b border-slate-200 text-[11px] font-medium uppercase tracking-wide text-slate-500" aria-hidden="true">
+      <span></span><span>Tâche</span><span>Projet</span><span>Heures</span><span>Jour</span><span>Statut</span></li>`;
+  $('#suggest-list').innerHTML = suggItems.length ? head + suggItems.map((it, i) => {
     const [label, cls] = SUGG_BADGE[it.kind];
     const p = projects.find((x) => x.id === it.projectId);
     const active = it.kind !== 'planned';
     const origin = [it.excerpt && `« ${esc(it.excerpt)} »`, it.reason && `<span class="text-slate-400">${esc(it.reason)}</span>`].filter(Boolean).join(' ');
     return `
-      <li class="flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-2.5 ${active ? '' : 'opacity-60'}">
+      <li class="sugg-row flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-2.5 ${active ? '' : 'opacity-60'}">
         <input type="checkbox" class="chk mt-2" data-sugg-pick="${i}" ${it.picked ? 'checked' : ''} ${active ? '' : 'disabled'} aria-label="Retenir « ${esc(it.task_name)} »" />
         <div class="min-w-0 flex-1 basis-56">
           ${it.kind === 'new'
@@ -3552,16 +3564,17 @@ function renderSuggestions() {
             : `<p class="px-2 py-1 text-sm font-medium break-words">${esc(it.task_name)}</p>`}
           ${origin ? `<p class="mt-0.5 px-2 text-xs text-slate-500 break-words">${origin}</p>` : ''}
         </div>
-        <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
+        <div class="sugg-ctl flex flex-wrap items-center gap-2 sm:ml-auto">
           ${it.kind === 'new'
             ? `<select data-sugg-project="${i}" aria-label="Projet" class="min-w-0 max-w-[16rem] ${SUGG_FIELD}">${projectOptions(it)}</select>
                <input data-sugg-hours="${i}" type="number" min="0" step="0.25" value="${it.hours}" aria-label="Heures" title="Heures" class="w-20 ${SUGG_FIELD}" />`
-            : `<span class="min-w-0 max-w-[16rem] truncate text-xs text-slate-500">${p ? `${esc(p.clients.name)} · ${esc(p.name)} · ` : ''}${fmtH(it.hours)}</span>`}
-          ${active ? `<select data-sugg-day="${i}" aria-label="Destination" class="${SUGG_FIELD}">${dayOptions(it)}</select>` : `<span class="text-xs text-slate-500">${esc(it.day)}</span>`}
-          <span class="shrink-0 whitespace-nowrap text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
+            : `<span class="min-w-0 max-w-[16rem] truncate px-2 py-1 text-sm text-slate-600" title="${p ? `${esc(p.clients.name)} · ${esc(p.name)}` : ''}">${p ? `${esc(p.clients.name)} · ${esc(p.name)}` : ''}</span>
+               <span class="px-2 py-1 text-sm text-slate-600 tabular-nums">${fmtH(it.hours)}</span>`}
+          ${active ? `<select data-sugg-day="${i}" aria-label="Destination" class="${SUGG_FIELD}">${dayOptions(it)}</select>` : `<span class="px-2 py-1 text-sm text-slate-600">${esc(it.day)}</span>`}
+          <span class="justify-self-start shrink-0 whitespace-nowrap text-[11px] font-medium rounded px-1.5 py-0.5 ${cls}">${label}</span>
         </div>
       </li>`;
-  }).join('') || '<li class="px-3 py-3 text-sm text-slate-400">Aucune tâche à proposer.</li>';
+  }).join('') : '<li class="px-3 py-3 text-sm text-slate-400">Aucune tâche à proposer.</li>';
   $('#suggest-list').classList.remove('hidden');
   const count = (kind) => suggItems.filter((it) => it.kind === kind).length;
   const s = (n) => (n > 1 ? 's' : '');
@@ -3579,7 +3592,49 @@ function syncSuggestApply() {
   const n = suggItems.filter((it) => it.picked && it.kind !== 'planned').length;
   $('#suggest-apply').disabled = !n;
   $('#suggest-apply').textContent = n ? `Appliquer (${n})` : 'Appliquer';
+  renderSuggestPlanning();
 }
+
+// Planning de la semaine (Lot 34) : lecture seule, avec l'effet des suggestions retenues en couleur.
+let suggPlanningOpen = false;
+
+function renderSuggestPlanning() {
+  if (!suggPlanningOpen) return;
+  $('#suggest-planning-title').textContent = `Planning · ${weekTitle(noteWeek).toLowerCase()}`;
+  const line = (cls, time, text, hours) => `
+    <li class="flex items-baseline gap-2 rounded px-1.5 py-1 text-xs ${cls}">
+      <span class="min-w-0 flex-1 break-words">${time ? `<span class="tabular-nums text-slate-500">${esc(time)}</span> ` : ''}${text}</span>
+      <span class="shrink-0 tabular-nums text-slate-500">${fmtH(hours)}</span>
+    </li>`;
+  $('#suggest-planning-days').innerHTML = planningPreview(tasks, suggItems, labels).map((d) => {
+    const rows = d.existing.map((t) => line(t.is_completed ? 'bg-white text-slate-400 line-through' : 'bg-white',
+      t.start_time ? t.start_time.slice(0, 5).replace(':', 'h') : '',
+      `${esc(taskClient(t))} · ${esc(t.task_name)}`, t.estimated_hours))
+      .concat(d.added.map((s) => {
+        const p = projects.find((x) => x.id === s.projectId);
+        const owner = p ? p.clients.name : s.newClient || s.newProject || '';
+        return line(s.kind === 'plan' ? 'bg-blue-50 text-blue-900' : 'bg-emerald-50 text-emerald-900', '',
+          `+ ${owner ? `${esc(owner)} · ` : ''}${esc(s.task_name.trim() || 'Sans nom')}`, s.hours);
+      }));
+    return `
+      <section>
+        <h4 class="flex items-baseline justify-between px-1 pb-1 text-xs font-semibold"><span>${d.day}</span>
+          <span class="font-medium tabular-nums text-slate-500">${fmtH(d.hours)}</span></h4>
+        <ul class="space-y-0.5">${rows.join('') || '<li class="px-1.5 py-1 text-xs text-slate-400">Rien de prévu</li>'}</ul>
+      </section>`;
+  }).join('');
+}
+
+function setSuggestPlanning(open) {
+  suggPlanningOpen = open;
+  $('#suggest-planning-panel').classList.toggle('hidden', !open);
+  $('#suggest-planning').setAttribute('aria-expanded', String(open));
+  $('#suggest-planning').textContent = open ? 'Masquer le planning' : 'Voir le planning';
+  suggestDialog.classList.toggle('max-w-4xl', !open);
+  suggestDialog.classList.toggle('max-w-7xl', open);
+  renderSuggestPlanning();
+}
+$('#suggest-planning').addEventListener('click', () => setSuggestPlanning(!suggPlanningOpen));
 
 // Saisies dans la liste : mises à jour sur place (pas de nouveau rendu, le focus reste dans le champ).
 function onSuggestEdit(e) {
@@ -3782,7 +3837,7 @@ const TOURS = {
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
       { id: 'notes', targetSelector: '#notes-tab', placement: 'bottom', lot: 'Lot 25',
         title: 'Bloc-notes de la semaine',
-        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une ; « Copier pour Claude » fait analyser la note dans ta conversation Claude.' },
+        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une, avec un aperçu du planning de la semaine ; « Copier pour Claude » fait analyser la note dans ta conversation Claude.' },
       { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
         title: 'Étiquettes et réunions',
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },
