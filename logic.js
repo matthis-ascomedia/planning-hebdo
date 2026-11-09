@@ -602,6 +602,34 @@ ${String(note ?? '').trim()}`;
     return { planned, parked, plannedHours: sumHours(tasks.filter((t) => t.day_of_week)), parkedHours: sumHours(tasks.filter((t) => !t.day_of_week)) };
   }
 
+  // Projets les plus travaillés la semaine passée (Lot 36), pour la semaine du lundi `monday` : au plus `limit`
+  // projets en cours, du plus long au plus court (temps passé, à défaut heures prévues), à égalité par client puis projet.
+  // La semaine passée est la dernière semaine close si elle l'a été depuis le mardi de la semaine précédente (un lundi,
+  // on clôt encore celle d'avant) ; sinon « Nouvelle Semaine » n'est pas passée : tâches terminées du planning et consignées.
+  function lastWeekProjects(tasks, history, weeks, projects, monday, limit = 5) {
+    const since = addDays(keyDate(shiftWeek(monday, -1)), 1).getTime();
+    const last = weekPeriods(weeks)[0];
+    const source = last && new Date(last.closed_at).getTime() >= since
+      ? weekTasks(history, last)
+      : tasks.filter((t) => t.is_completed).concat(consignedPending(history));
+    const rows = new Map();
+    source.forEach((t) => {
+      const p = projects.find((x) => x.id === t.project_id);
+      if (p && p.status !== 'en_cours') return;
+      const client = (p?.clients?.name ?? t.client_name ?? '').trim();
+      const project = (p?.name ?? t.project_name ?? '').trim();
+      const key = p?.id ?? t.project_id ?? `n:${normalizeText(client)}·${normalizeText(project)}`;
+      const row = rows.get(key) || { key, project_id: p?.id ?? t.project_id ?? null, client, project, hours: 0, count: 0 };
+      row.hours += hoursSpent(t);
+      row.count += 1;
+      rows.set(key, row);
+    });
+    const byName = (a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' });
+    return [...rows.values()].filter((r) => r.hours > 0)
+      .sort((a, b) => b.hours - a.hours || byName(a.client, b.client) || byName(a.project, b.project))
+      .slice(0, limit);
+  }
+
   // Rang d'un jour dans son mois : 1 à 4, ou 5 pour un 5ᵉ (toujours le dernier).
   const monthlyRank =(date) => Math.ceil(date.getDate() / 7);
   const isLastOfMonth = (date) => addDays(date, 7).getMonth() !== date.getMonth();
@@ -1073,7 +1101,7 @@ ${String(note ?? '').trim()}`;
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, weekSynthesis, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, weekSynthesis, lastWeekProjects, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

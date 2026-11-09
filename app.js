@@ -8,7 +8,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, monthlyRank, dueOccurrences, recurrenceLabel,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, lastWeekProjects, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -29,6 +29,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.36.0', type: 'mineure', lot: 'Lot 36', date: '2026-11-09',
+    items: [
+      'Bloc-notes : à l’ouverture sur la note vide de la semaine en cours, une carte propose les 5 projets sur lesquels tu as passé le plus de temps la semaine dernière, avec leurs heures.',
+      '« Insérer dans la note » ajoute une ligne « Client · Projet » par projet coché (tous le sont au départ) ; « Ignorer » la masque pour cette semaine. Elle disparaît aussi dès que tu écris.',
+      'La semaine dernière est la dernière semaine close par « Nouvelle Semaine » ; si elle n’a pas encore été close, ce sont les tâches terminées du planning et les tâches consignées. Les projets archivés ne sont pas proposés.',
+    ],
+  },
   {
     version: '1.35.0', type: 'mineure', lot: 'Lot 35', date: '2026-11-09',
     items: [
@@ -3462,7 +3470,50 @@ function syncNoteActions() {
   $('#notes-reuse').classList.toggle('hidden', !empty || !previous.trim());
   $('#notes-suggest').disabled = empty;
   $('#notes-claude').disabled = empty;
+  renderNotesRecap(empty);
 }
+
+// ---- Projets les plus travaillés la semaine dernière (Lot 36) ----
+// Proposés sur la note vide de la semaine en cours, tant qu'on ne les a pas ignorés pour cette semaine.
+const RECAP_DISMISSED_KEY = 'planning_notes_recap_dismissed';
+let recapDismissed = null;
+try { recapDismissed = localStorage.getItem(RECAP_DISMISSED_KEY); } catch { /* stockage indisponible */ }
+let recapRows = [];
+let recapSig = '';
+
+function renderNotesRecap(empty) {
+  const current = weekOffset(noteWeek, weekKey(new Date())) === 0;
+  recapRows = empty && current && recapDismissed !== noteWeek ? lastWeekProjects(tasks, history, weeks, projects, noteWeek) : [];
+  $('#notes-recap').classList.toggle('hidden', !recapRows.length);
+  const sig = recapRows.map((r) => `${r.key}:${r.hours}`).join('|');
+  if (!recapRows.length || sig === recapSig) { if (!recapRows.length) recapSig = ''; return; }
+  recapSig = sig;
+  $('#notes-recap-list').innerHTML = recapRows.map((r, i) => `
+    <li>
+      <label class="flex items-center gap-2 text-sm cursor-pointer">
+        <input type="checkbox" class="chk" data-recap="${i}" checked />
+        <span class="min-w-0 flex-1 truncate" title="${esc(`${r.client} · ${r.project}`)}">${esc(r.client)} · <span class="font-medium">${esc(r.project)}</span></span>
+        <span class="shrink-0 text-xs tabular-nums text-slate-500">${fmtH(r.hours)}</span>
+      </label>
+    </li>`).join('');
+  syncRecapInsert();
+}
+
+const syncRecapInsert = () => { $('#notes-recap-insert').disabled = !$('#notes-recap-list input:checked'); };
+
+$('#notes-recap-list').addEventListener('change', syncRecapInsert);
+$('#notes-recap-insert').addEventListener('click', () => {
+  const picked = [...$('#notes-recap-list').querySelectorAll('input:checked')].map((i) => recapRows[+i.dataset.recap]);
+  if (!picked.length) return;
+  editNote(0, notesText.value.length, picked.map((r) => `- ${r.client} · ${r.project}`).join('\n') + '\n');
+  notesText.focus();
+});
+$('#notes-recap-dismiss').addEventListener('click', () => {
+  recapDismissed = noteWeek;
+  try { localStorage.setItem(RECAP_DISMISSED_KEY, noteWeek); } catch { /* stockage indisponible */ }
+  syncNoteActions();
+  notesText.focus();
+});
 
 const weekTitle = (week) => `Semaine du ${new Date(`${week}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}`;
 
@@ -3942,7 +3993,7 @@ const TOURS = {
         content: 'Renseigne le client, le projet, la tâche et les heures, puis choisis un jour. Avec « Sas d’attente », on te propose le projet dans lequel la ranger.' },
       { id: 'notes', targetSelector: '#notes-tab', placement: 'bottom', lot: 'Lot 25',
         title: 'Bloc-notes de la semaine',
-        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille et liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une, avec un aperçu du planning de la semaine ; « Copier pour Claude » fait analyser la note dans ta conversation Claude.' },
+        content: 'En début de semaine, déplie le bloc-notes depuis cette pastille : une carte propose les projets les plus travaillés la semaine dernière, à insérer d’un clic, puis liste les projets prévus. La note s’enregistre toute seule, une par semaine. « Suggérer des tâches » propose ensuite les tâches à créer dans le sas ou à planifier, que tu valides une par une, avec un aperçu du planning de la semaine ; « Copier pour Claude » fait analyser la note dans ta conversation Claude.' },
       { id: 'labels', targetSelector: '#add-form [data-label-picker]', placement: 'bottom', lot: 'Lot 14',
         title: 'Étiquettes et réunions',
         content: 'Coche une ou plusieurs étiquettes : la carte prend la teinte de la plus prioritaire. Avec « Réunion », indique l’heure et le lien du salon : la carte affiche l’heure et un bouton « Rejoindre ». Les étiquettes se gèrent dans Réglages.' },

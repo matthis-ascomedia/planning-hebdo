@@ -1835,3 +1835,58 @@ describe('synthèse de la semaine (lot 35)', () => {
     assert.deepEqual(L.weekSynthesis([], [], labels), { planned: [], parked: [], plannedHours: 0, parkedHours: 0 });
   });
 });
+
+describe('projets les plus travaillés la semaine passée (lot 36)', () => {
+  const MONDAY = '2026-11-09';
+  const projects = [
+    { id: 'p1', name: 'Site', status: 'en_cours', clients: client('Acme') },
+    { id: 'p2', name: 'Appli', status: 'en_cours', clients: client('Béta') },
+    { id: 'p3', name: 'Blog', status: 'en_cours', clients: client('Écho') },
+    { id: 'p4', name: 'Vieux', status: 'termine', clients: client('Acme') },
+  ];
+  const done = (project_id, hours, over = {}) => task({ project_id, estimated_hours: hours, is_completed: true, ...over });
+  const closed = { id: 'w2', closed_at: '2026-11-09T08:00:00.000Z' };
+  const older = { id: 'w1', closed_at: '2026-11-02T08:00:00.000Z' };
+  const rows = (tasks, history, weeks, extra = []) => L.lastWeekProjects(tasks, history, weeks, projects.concat(extra), MONDAY);
+
+  test('semaine close hier ou ce matin : temps passé par projet, du plus long au plus court', () => {
+    const history = [
+      done('p1', 2, { week_id: 'w2' }), done('p1', 1, { week_id: 'w2', actual_hours: 4 }),
+      done('p2', 6, { week_id: 'w2' }), done('p3', 1, { week_id: 'w2' }),
+      done('p3', 50, { week_id: 'w1' }), // une semaine plus ancienne : ignorée
+    ];
+    const r = rows([], history, [older, closed]);
+    assert.deepEqual(r.map((x) => [x.project, x.client, x.hours]), [['Site', 'Acme', 6], ['Appli', 'Béta', 6], ['Blog', 'Écho', 1]]);
+  });
+
+  test('à égalité d’heures : ordre alphabétique du client puis du projet', () => {
+    const history = [done('p2', 3, { week_id: 'w2' }), done('p1', 3, { week_id: 'w2' })];
+    assert.deepEqual(rows([], history, [closed]).map((x) => x.project), ['Site', 'Appli']);
+  });
+
+  test('semaine pas encore close : les tâches terminées du planning et les consignées comptent', () => {
+    const tasks = [done('p1', 2), task({ project_id: 'p2', estimated_hours: 9 })]; // la seconde n'est pas terminée
+    const history = [done('p3', 3, { archived_at: '2026-11-05T10:00:00Z', consigned_at: '2026-11-05T10:00:00Z', week_id: null })];
+    assert.deepEqual(rows(tasks, history, [older]).map((x) => [x.project, x.hours]), [['Blog', 3], ['Site', 2]]);
+  });
+
+  test('semaine close trop ancienne : on retombe sur le planning en cours', () => {
+    const r = rows([done('p2', 5)], [done('p1', 9, { week_id: 'w1' })], [older].map((w) => ({ ...w, closed_at: '2026-10-20T08:00:00.000Z' })));
+    assert.deepEqual(r.map((x) => x.project), ['Appli']);
+  });
+
+  test('un projet terminé n’est pas proposé ; un projet supprimé reste, sous le nom gardé sur la tâche', () => {
+    const history = [
+      done('p4', 8, { week_id: 'w2' }),
+      done('gone', 2, { week_id: 'w2', client_name: 'Delta', project_name: 'Disparu' }),
+    ];
+    assert.deepEqual(rows([], history, [closed]).map((x) => [x.client, x.project]), [['Delta', 'Disparu']]);
+  });
+
+  test('limite à 5 projets, ignore les temps nuls, rien à proposer sans temps', () => {
+    const many = ['a', 'b', 'c', 'd', 'e', 'f'].map((id, i) => done(id, i + 1, { week_id: 'w2', client_name: 'C', project_name: `P${id}` }));
+    assert.equal(rows([], many, [closed]).length, 5);
+    assert.deepEqual(rows([], [done('p1', 0, { week_id: 'w2', actual_hours: 0 })], [closed]), []);
+    assert.deepEqual(rows([], [], []), []);
+  });
+});
