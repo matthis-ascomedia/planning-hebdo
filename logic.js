@@ -562,6 +562,46 @@ ${String(note ?? '').trim()}`;
     });
   }
 
+  // Synthèse de la semaine en cours, façon prise de notes (Lot 35) : client > projet > tâches, sans notion de jour.
+  // Les tâches planifiées et celles du sas forment deux listes distinctes (`planned`, `parked`), organisées pareil.
+  // Urgence : rang de l'étiquette la plus prioritaire (Réglages) parmi les tâches à faire ; un client prend le rang de
+  // son projet le plus urgent ; sans étiquette, après les autres. À égalité : ordre alphabétique. Une tâche terminée
+  // n'est jamais urgente et passe après les tâches à faire de son projet. Heures : estimées, terminées comprises.
+  function weekSynthesis(tasks, comments, labels) {
+    const urgency = (t) => (t.is_completed ? Infinity : primaryLabel(t, labels)?.position ?? Infinity);
+    const dayIndex = (t) => { const i = DAYS.indexOf(t.day_of_week); return i < 0 ? DAYS.length : i; };
+    const byName = (a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' });
+    const rankThenName = (a, b) => (a.rank === b.rank ? 0 : a.rank < b.rank ? -1 : 1) || byName(a.name, b.name);
+    const byTask = (a, b) => (!!a.task.is_completed - !!b.task.is_completed) || (urgency(a.task) === urgency(b.task) ? 0 : urgency(a.task) < urgency(b.task) ? -1 : 1)
+      || (dayIndex(a.task) - dayIndex(b.task)) || byName(a.task.task_name ?? '', b.task.task_name ?? '');
+
+    const organize = (list) => {
+      const clients = new Map();
+      list.forEach((t) => {
+        const ck = clientKey(t);
+        if (!clients.has(ck)) clients.set(ck, { key: ck, client: (t.projects?.clients?.name ?? t.client_name ?? '').trim(), projects: new Map() });
+        const c = clients.get(ck);
+        const pk = t.project_id ?? `n:${normalizeText(t.projects?.name ?? t.project_name ?? '')}`;
+        if (!c.projects.has(pk)) c.projects.set(pk, { key: pk, project_id: t.project_id ?? null, project: (t.projects?.name ?? t.project_name ?? '').trim(), tasks: [] });
+        c.projects.get(pk).tasks.push({ task: t, comments: comments.filter((x) => x.task_id === t.id) });
+      });
+      return [...clients.values()].map((c) => {
+        const projects = [...c.projects.values()].map((p) => ({
+          ...p,
+          tasks: p.tasks.sort(byTask),
+          hours: sumHours(p.tasks.map((x) => x.task)),
+          rank: Math.min(...p.tasks.map((x) => urgency(x.task))),
+        })).sort((a, b) => rankThenName({ rank: a.rank, name: a.project }, { rank: b.rank, name: b.project }));
+        return { ...c, projects, hours: projects.reduce((s, p) => s + p.hours, 0), rank: Math.min(...projects.map((p) => p.rank)) };
+      }).sort((a, b) => rankThenName({ rank: a.rank, name: a.client }, { rank: b.rank, name: b.client }))
+        .map(({ rank, projects, ...c }) => ({ ...c, projects: projects.map(({ rank: r, ...p }) => p) }));
+    };
+
+    const planned = organize(tasks.filter((t) => t.day_of_week));
+    const parked = organize(tasks.filter((t) => !t.day_of_week));
+    return { planned, parked, plannedHours: sumHours(tasks.filter((t) => t.day_of_week)), parkedHours: sumHours(tasks.filter((t) => !t.day_of_week)) };
+  }
+
   // Rang d'un jour dans son mois : 1 à 4, ou 5 pour un 5ᵉ (toujours le dernier).
   const monthlyRank =(date) => Math.ceil(date.getDate() / 7);
   const isLastOfMonth = (date) => addDays(date, 7).getMonth() !== date.getMonth();
@@ -1033,7 +1073,7 @@ ${String(note ?? '').trim()}`;
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, weekSynthesis, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

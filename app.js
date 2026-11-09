@@ -14,13 +14,14 @@ const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateR
   searchEntities, filterProjects, groupByClient,
   pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,
   initialsOf, clientProjectRows, clientWeek, clientConsigned, clientOverview, clientCards, defaultClientFilter, projectOverview, sasSummary, parkedVisible,
-  weekSnapshot, weekPeriods, weekTasks } = PlanningLogic;
+  weekSnapshot, weekPeriods, weekTasks, weekSynthesis } = PlanningLogic;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 const SESSION_KEY = 'planning_session';
 const SEEN_KEY = 'planning_changelog_seen';
 const SAS_VIEW_KEY = 'planning_sas_view';
 const LINKS_KEY = 'planning_show_links';
+const PLANNING_MODE_KEY = 'planning_mode';
 const DEFAULT_CLIENT = 'Sans client';
 const DEFAULT_PROJECT = 'Sans projet';
 const TASK_SELECT = '*,projects(id,name,status,clients(id,name))';
@@ -28,6 +29,15 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.35.0', type: 'mineure', lot: 'Lot 35', date: '2026-11-09',
+    items: [
+      'Planning : un interrupteur « Jours | Synthèse » affiche la semaine en cours en prise de notes, sans notion de jour. Ton choix est mémorisé sur l’appareil.',
+      'La synthèse range les tâches par client puis par projet, avec le total d’heures prévues de chaque projet et de chaque client. Les tâches terminées restent visibles, barrées.',
+      'Clients et projets sont triés par urgence (étiquette la plus prioritaire de tes réglages, « Urgent » d’abord), puis par ordre alphabétique.',
+      'Les commentaires sont lus sous chaque tâche : les points à traiter ressortent en ambre, les notes et les commentaires traités restent plus discrets. Le sas d’attente est dans une section à part, en bas.',
+    ],
+  },
   {
     version: '1.34.0', type: 'mineure', lot: 'Lot 34', date: '2026-11-02',
     items: [
@@ -731,6 +741,100 @@ function cardLinksHTML(t) {
          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}">${esc(l.label)}</a>`).join('')}</div>`;
 }
 
+// ---- Synthèse de la semaine (Lot 35) : client > projet > tâches et commentaires, sans notion de jour ----
+// Un commentaire à traiter ressort (ambre) ; une note et un commentaire traité restent lisibles mais discrets.
+function synthCommentHTML(c) {
+  const pending = !c.is_note && !c.is_done;
+  const mark = c.is_note ? '•' : c.is_done ? '☑' : '☐';
+  const state = c.is_note ? 'Note' : c.is_done ? 'Commentaire traité' : 'Commentaire à traiter';
+  return `
+    <li class="flex items-start gap-2 text-sm rounded ${pending ? 'bg-amber-50 border-l-2 border-amber-400 pl-2 py-0.5 text-amber-900' : c.is_done ? 'text-slate-400' : 'text-slate-600'}">
+      <span class="shrink-0 leading-snug" title="${state}" aria-label="${state}">${mark}</span>
+      <span class="min-w-0 flex-1 break-words whitespace-pre-line ${c.is_done ? 'line-through' : ''}">${esc(c.body)}</span>
+    </li>`;
+}
+
+function synthTaskHTML({ task: t, comments: cs }) {
+  const done = t.is_completed;
+  const time = isMeeting(t, labels) && t.start_time ? `<span class="text-xs font-semibold tabular-nums text-slate-700">${esc(t.start_time)}</span>` : '';
+  return `
+    <li class="py-1.5">
+      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span class="shrink-0 w-3 text-center ${done ? 'text-emerald-600' : 'text-slate-300'}" aria-hidden="true">${done ? '✓' : '–'}</span>
+        ${time}
+        <span class="min-w-0 text-sm break-words ${done ? 'line-through text-slate-400' : 'font-medium text-slate-900'}" lang="fr">${esc(t.task_name)}</span>
+        ${labelChipsHTML(t)}${recurrenceBadgeHTML(t)}
+        <span class="ml-auto text-xs tabular-nums text-slate-500">${fmtH(t.estimated_hours)}</span>
+      </div>
+      ${cs.length ? `<ul class="mt-1 ml-5 space-y-1">${cs.map(synthCommentHTML).join('')}</ul>` : ''}
+    </li>`;
+}
+
+function synthClientsHTML(list) {
+  return list.map((c) => `
+    <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="${esc(c.client)}">
+      <h3 class="flex items-baseline justify-between gap-3 border-b border-slate-100 pb-2">
+        <span class="min-w-0 truncate text-base font-semibold">${esc(c.client)}</span>
+        <span class="shrink-0 text-xs font-medium tabular-nums text-slate-500">${fmtH(c.hours)}</span>
+      </h3>
+      ${c.projects.map((p) => `
+      <div class="mt-3">
+        <h4 class="flex items-baseline justify-between gap-3 text-sm font-semibold text-slate-700">
+          <span class="min-w-0 truncate">${p.project_id ? `<a href="#projets/${p.project_id}" class="hover:underline">${esc(p.project)}</a>` : esc(p.project)}</span>
+          <span class="shrink-0 text-xs font-medium tabular-nums text-slate-500">${fmtH(p.hours)}</span>
+        </h4>
+        <ul class="mt-1 divide-y divide-slate-100">${p.tasks.map(synthTaskHTML).join('')}</ul>
+      </div>`).join('')}
+    </section>`).join('');
+}
+
+function renderSynthese() {
+  const box = $('#synthese');
+  if (box.classList.contains('hidden')) return;
+  const s = weekSynthesis(tasks, comments, labels);
+  const count = (list) => list.reduce((n, c) => n + c.projects.reduce((m, p) => m + p.tasks.length, 0), 0);
+  const planned = count(s.planned);
+  const parked = count(s.parked);
+  box.innerHTML = `
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      <h2 class="text-lg font-semibold tracking-tight">Synthèse de la semaine</h2>
+      <p class="text-xs text-slate-500 tabular-nums">${plural(planned, 'tâche')} planifiée${planned > 1 ? 's' : ''} · ${fmtH(s.plannedHours)}</p>
+    </div>
+    ${planned ? `<div class="space-y-3">${synthClientsHTML(s.planned)}</div>`
+      : '<p class="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">Aucune tâche planifiée cette semaine.</p>'}
+    ${parked ? `
+    <div class="mt-6">
+      <h3 class="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 text-sm font-semibold">
+        <span>Sas d’attente</span>
+        <span class="text-xs font-normal text-slate-500 tabular-nums">${plural(parked, 'tâche')} rangée${parked > 1 ? 's' : ''} · ${fmtH(s.parkedHours)}</span>
+      </h3>
+      <div class="space-y-3">${synthClientsHTML(s.parked)}</div>
+    </div>` : ''}`;
+}
+
+// Bascule du planning : colonnes par jour ou synthèse (le sas est alors dans la synthèse, la colonne de droite se replie).
+let planningMode = 'days';
+try { if (localStorage.getItem(PLANNING_MODE_KEY) === 'synthese') planningMode = 'synthese'; } catch { /* stockage indisponible */ }
+
+function setPlanningMode(mode) {
+  planningMode = mode;
+  const synth = mode === 'synthese';
+  $('#board').classList.toggle('hidden', synth);
+  $('#synthese').classList.toggle('hidden', !synth);
+  $('#planning-aside').classList.toggle('hidden', synth);
+  $('#planning-main').classList.toggle('lg:col-span-2', !synth);
+  $('#planning-main').classList.toggle('lg:col-span-3', synth);
+  document.querySelectorAll('[data-planning-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.planningMode === mode)));
+  renderSynthese();
+}
+
+$('#planning-mode').addEventListener('click', (e) => {
+  const mode = e.target.closest('[data-planning-mode]')?.dataset.planningMode;
+  if (!mode) return;
+  try { localStorage.setItem(PLANNING_MODE_KEY, mode); } catch { /* stockage indisponible */ }
+  setPlanningMode(mode);
+});
+
 // Sélecteur d'étiquettes d'un formulaire : pastilles à cocher ; conserve la sélection en cours d'un rendu à l'autre.
 const formLabels = (form) => [...form.querySelectorAll('input[name="label"]:checked')].map((i) => i.value);
 
@@ -779,6 +883,7 @@ function render() {
       </section>`;
   }).join('');
 
+  renderSynthese();
   $('#toggle-links').setAttribute('aria-pressed', String(showLinks));
   const open = tasks.filter((t) => t.day_of_week && !t.is_completed);
   const hours = open.reduce((s, t) => s + (+t.estimated_hours || 0), 0);
@@ -3847,6 +3952,9 @@ const TOURS = {
       { id: 'board', targetSelector: '#board', placement: 'bottom', lot: 'Lot 1',
         title: 'Le planning de la semaine',
         content: 'Glisse les cartes d’un jour à l’autre, ou un conteneur par son en-tête pour réordonner la journée. Survole une carte pour la dupliquer (⧉), la modifier (✎) ou la renvoyer dans le sas (×), et coche-la une fois terminée : elle passe sous les tâches à faire.' },
+      { id: 'synthese', targetSelector: '#planning-mode', placement: 'bottom', lot: 'Lot 35',
+        title: 'La synthèse de la semaine',
+        content: 'Bascule sur « Synthèse » pour relire la semaine en prise de notes : clients puis projets, du plus urgent au moins urgent, avec leurs tâches, leurs heures et leurs commentaires. « Jours » revient au planning en colonnes.' },
       { id: 'comments', targetSelector: '#board [data-comment-form]', placement: 'bottom', lot: 'Lot 20',
         title: 'Notes et points à traiter',
         content: 'Écris directement sur une carte (Entrée pour l’ajouter) : c’est une simple note. Active « À traiter » pour créer un point à cocher ; le compteur ambre indique ceux qui restent à traiter. Les liens du projet s’affichent sur la carte, le bouton « Liens » les masque.' },
@@ -4040,6 +4148,7 @@ $('#logout').addEventListener('click', async () => {
 // ---------- Init ----------
 async function start() {
   setAuthed(true);
+  setPlanningMode(planningMode);
   render();
   await run(async () => {
     [clients, projects, tasks, history, links, comments, weeks, projectTypes, labels, recurrences] = await Promise.all([

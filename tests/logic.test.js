@@ -1747,3 +1747,91 @@ describe('planning avec l’effet des suggestions (lot 34)', () => {
     assert.ok(p.every((d) => !d.existing.some((t) => t.id === 'sas')));
   });
 });
+
+describe('synthèse de la semaine (lot 35)', () => {
+  const labels = [
+    { id: 'urg', name: 'Urgent', color: 'rouge', position: 1 },
+    { id: 'att', name: 'En attente client', color: 'orange', position: 2 },
+  ];
+  const mk = (id, clientName, projectName, over = {}) => task({
+    id, project_id: `${clientName}/${projectName}`, estimated_hours: 1,
+    projects: { name: projectName, clients: client(clientName) }, ...over,
+  });
+  const names = (list, key) => list.map((x) => x[key]);
+  const projectsOf = (s, clientName) => s.planned.find((c) => c.client === clientName).projects;
+
+  test('sépare les tâches planifiées du sas, avec leurs heures', () => {
+    const s = L.weekSynthesis([
+      mk('a', 'Acme', 'Site', { estimated_hours: 2 }),
+      mk('b', 'Acme', 'Site', { estimated_hours: 1.5, is_completed: true }),
+      mk('c', 'Acme', 'Blog', { day_of_week: null, estimated_hours: 4 }),
+    ], [], labels);
+    assert.deepEqual(names(s.planned, 'client'), ['Acme']);
+    assert.equal(s.planned[0].hours, 3.5);
+    assert.deepEqual(s.planned[0].projects.map((p) => [p.project, p.hours]), [['Site', 3.5]]);
+    assert.deepEqual(s.parked[0].projects.map((p) => [p.project, p.hours]), [['Blog', 4]]);
+    assert.deepEqual([s.plannedHours, s.parkedHours], [3.5, 4]);
+  });
+
+  test('clients et projets : urgence (étiquette la plus prioritaire), puis ordre alphabétique', () => {
+    const s = L.weekSynthesis([
+      mk('1', 'Zèbre', 'Alpha'),
+      mk('2', 'Acme', 'Site', { label_ids: ['att'] }),
+      mk('3', 'Béta', 'Blog', { label_ids: ['urg'] }),
+      mk('4', 'Acme', 'Appli', { label_ids: ['att'] }),
+      mk('5', 'Acme', 'Zéro', { label_ids: ['urg', 'att'] }),
+      mk('6', 'Écho', 'Un'),
+    ], [], labels);
+    // Béta et Acme (via « Zéro ») sont urgents ; Acme < Béta à égalité ; puis sans étiquette : Écho avant Zèbre.
+    assert.deepEqual(names(s.planned, 'client'), ['Acme', 'Béta', 'Écho', 'Zèbre']);
+    assert.deepEqual(names(projectsOf(s, 'Acme'), 'project'), ['Zéro', 'Appli', 'Site']);
+  });
+
+  test('une tâche terminée ne rend pas son projet urgent et passe après les autres du projet', () => {
+    const s = L.weekSynthesis([
+      mk('1', 'Acme', 'Site', { label_ids: ['urg'], is_completed: true }),
+      mk('2', 'Acme', 'Site', { label_ids: ['att'] }),
+      mk('3', 'Béta', 'Blog', { label_ids: ['att'] }),
+      mk('4', 'Béta', 'Blog', { label_ids: ['urg'] }),
+    ], [], labels);
+    assert.deepEqual(names(s.planned, 'client'), ['Béta', 'Acme']);
+    assert.deepEqual(projectsOf(s, 'Acme')[0].tasks.map((x) => x.task.id), ['2', '1']);
+    assert.deepEqual(projectsOf(s, 'Béta')[0].tasks.map((x) => x.task.id), ['4', '3']);
+  });
+
+  test('tâches d’un projet : à faire d’abord, urgence, puis jour de la semaine, puis nom', () => {
+    const s = L.weekSynthesis([
+      mk('v', 'Acme', 'Site', { day_of_week: 'Vendredi', task_name: 'A' }),
+      mk('l2', 'Acme', 'Site', { day_of_week: 'Lundi', task_name: 'B' }),
+      mk('l1', 'Acme', 'Site', { day_of_week: 'Lundi', task_name: 'A' }),
+      mk('u', 'Acme', 'Site', { day_of_week: 'Jeudi', task_name: 'Z', label_ids: ['urg'] }),
+      mk('d', 'Acme', 'Site', { day_of_week: 'Lundi', task_name: 'A', is_completed: true }),
+    ], [], labels);
+    assert.deepEqual(projectsOf(s, 'Acme')[0].tasks.map((x) => x.task.id), ['u', 'l1', 'l2', 'v', 'd']);
+  });
+
+  test('chaque tâche porte ses commentaires (notes et traités compris), dans l’ordre reçu', () => {
+    const comments = [
+      { id: 'c1', task_id: 'a', body: 'x', is_note: false, is_done: false },
+      { id: 'c2', task_id: 'b', body: 'y', is_note: true, is_done: false },
+      { id: 'c3', task_id: 'a', body: 'z', is_note: false, is_done: true },
+    ];
+    const s = L.weekSynthesis([mk('a', 'Acme', 'Site'), mk('b', 'Acme', 'Site')], comments, labels);
+    const byId = Object.fromEntries(s.planned[0].projects[0].tasks.map((x) => [x.task.id, names(x.comments, 'id')]));
+    assert.deepEqual(byId, { a: ['c1', 'c3'], b: ['c2'] });
+  });
+
+  test('un client est regroupé par identifiant, un projet par identifiant ou nom normalisé', () => {
+    const s = L.weekSynthesis([
+      task({ id: '1', project_id: null, client_name: 'Acme', project_name: 'Site', day_of_week: 'Mardi' }),
+      task({ id: '2', project_id: null, client_name: ' acmé ', project_name: 'SITE', day_of_week: 'Mardi' }),
+    ], [], labels);
+    assert.equal(s.planned.length, 1);
+    assert.equal(s.planned[0].projects.length, 1);
+    assert.equal(s.planned[0].projects[0].tasks.length, 2);
+  });
+
+  test('sans tâche : rien à afficher', () => {
+    assert.deepEqual(L.weekSynthesis([], [], labels), { planned: [], parked: [], plannedHours: 0, parkedHours: 0 });
+  });
+});
