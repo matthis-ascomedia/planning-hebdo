@@ -630,6 +630,89 @@ ${String(note ?? '').trim()}`;
       .slice(0, limit);
   }
 
+  // Début d'une période de l'Historique (Lot 37) : 4 semaines, 3 ou 12 mois avant `now` ; null pour « tout ».
+  function periodStart(period, now = new Date()) {
+    const d = midnight(now);
+    if (period === '4w') return addDays(d, -28);
+    if (period === '3m') return new Date(d.getFullYear(), d.getMonth() - 3, d.getDate());
+    if (period === '12m') return new Date(d.getFullYear() - 1, d.getMonth(), d.getDate());
+    return null;
+  }
+
+  // Temps passé depuis `since` (Lot 37), à partir des tâches archivées : temps passé (à défaut heures prévues).
+  // Une tâche est datée par la clôture de sa semaine ; les tâches consignées d'une semaine pas encore close forment
+  // une dernière barre `pending`. Les `maxClients` clients les plus longs gardent une couleur (`slot` 0, 1, …), les
+  // autres sont regroupés en « Autres » (slot -1). Sortie : total, projets (du plus long au plus court), clients avec
+  // leur part, et semaines de la plus ancienne à la plus récente, empilées par client.
+  function timeBreakdown(history, weeks, projects, since = null, maxClients = 6) {
+    const from = since ? new Date(since).getTime() : -Infinity;
+    const placed = new Set();
+    const buckets = weekPeriods(weeks).reverse().map((w) => {
+      const tasks = weekTasks(history, w);
+      tasks.forEach((t) => placed.add(t.id));
+      return { id: w.id, date: w.closed_at, pending: false, tasks };
+    });
+    const loose = history.filter((t) => !placed.has(t.id));
+    if (loose.length) {
+      const date = loose.map((t) => t.archived_at).filter(Boolean).sort().pop() ?? '';
+      buckets.push({ id: 'pending', date, pending: true, tasks: loose });
+    }
+
+    const entries = [];
+    buckets.filter((b) => new Date(b.date).getTime() >= from).forEach((b) => b.tasks.forEach((t) => {
+      const hours = hoursSpent(t);
+      if (hours <= 0) return;
+      const p = projects.find((x) => x.id === t.project_id);
+      const client = (p?.clients?.name ?? t.client_name ?? '').trim() || 'Sans client';
+      const project = (p?.name ?? t.project_name ?? '').trim() || 'Sans projet';
+      entries.push({ bucket: b, client, project, hours, ck: normalizeText(client), pk: t.project_id ?? `n:${normalizeText(client)}·${normalizeText(project)}` });
+    }));
+
+    const byName = (a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' });
+    const byClient = new Map();
+    entries.forEach((e) => {
+      const c = byClient.get(e.ck) || { client: e.client, hours: 0 };
+      c.hours += e.hours;
+      byClient.set(e.ck, c);
+    });
+    const ranked = [...byClient.entries()].sort((a, b) => b[1].hours - a[1].hours || byName(a[1].client, b[1].client));
+    const slotOf = new Map(ranked.slice(0, maxClients).map(([ck], i) => [ck, i]));
+    const slot = (ck) => slotOf.get(ck) ?? -1;
+    const total = entries.reduce((s, e) => s + e.hours, 0);
+
+    const clients = ranked.slice(0, maxClients).map(([, c], i) => ({ client: c.client, hours: c.hours, slot: i, share: c.hours / total }));
+    const restHours = ranked.slice(maxClients).reduce((s, [, c]) => s + c.hours, 0);
+    if (restHours > 0) clients.push({ client: 'Autres', hours: restHours, slot: -1, share: restHours / total });
+
+    const byProject = new Map();
+    entries.forEach((e) => {
+      const r = byProject.get(e.pk) || { key: e.pk, project_id: e.pk.startsWith('n:') ? null : e.pk, project: e.project, client: e.client, slot: slot(e.ck), hours: 0, count: 0 };
+      r.hours += e.hours;
+      r.count += 1;
+      byProject.set(e.pk, r);
+    });
+
+    const weeksOut = buckets.map((b) => {
+      const mine = entries.filter((e) => e.bucket === b);
+      const segs = new Map();
+      mine.forEach((e) => {
+        const key = slot(e.ck) >= 0 ? e.ck : 'autres';
+        const s = segs.get(key) || { client: slot(e.ck) >= 0 ? e.client : 'Autres', slot: slot(e.ck), hours: 0 };
+        s.hours += e.hours;
+        segs.set(key, s);
+      });
+      const segments = [...segs.values()].sort((a, c) => (a.slot < 0 ? Infinity : a.slot) - (c.slot < 0 ? Infinity : c.slot));
+      return { id: b.id, date: b.date, pending: b.pending, hours: mine.reduce((s, e) => s + e.hours, 0), segments };
+    }).filter((w) => w.hours > 0);
+
+    return {
+      total,
+      projects: [...byProject.values()].sort((a, b) => b.hours - a.hours || byName(a.client, b.client) || byName(a.project, b.project)),
+      clients,
+      weeks: weeksOut,
+    };
+  }
+
   // Rang d'un jour dans son mois : 1 à 4, ou 5 pour un 5ᵉ (toujours le dernier).
   const monthlyRank =(date) => Math.ceil(date.getDate() / 7);
   const isLastOfMonth = (date) => addDays(date, 7).getMonth() !== date.getMonth();
@@ -1101,7 +1184,7 @@ ${String(note ?? '').trim()}`;
   return { DAYS, same, suggestProjects, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
     LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
     clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, weekSynthesis, lastWeekProjects, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
+    comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, weekSynthesis, lastWeekProjects, periodStart, timeBreakdown, monthlyRank, isLastOfMonth, matchesRule, dueOccurrences, recurrenceLabel, RANKS,
     extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
     normalizeText, searchEntities, filterProjects, groupByClient, normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
     pendingCount, pendingByProject, commentCounts, commentKindPatch, finishedWithPending, parseComment, linksOf,

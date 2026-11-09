@@ -1890,3 +1890,69 @@ describe('projets les plus travaillés la semaine passée (lot 36)', () => {
     assert.deepEqual(rows([], [], []), []);
   });
 });
+
+describe('temps passé par projet, client et semaine (lot 37)', () => {
+  const projects = [
+    { id: 'p1', name: 'Site', status: 'en_cours', clients: client('Acme') },
+    { id: 'p2', name: 'Appli', status: 'termine', clients: client('Béta') },
+    { id: 'p3', name: 'Blog', status: 'en_cours', clients: client('Écho') },
+  ];
+  const w1 = { id: 'w1', closed_at: '2026-10-05T08:00:00.000Z' };
+  const w2 = { id: 'w2', closed_at: '2026-10-12T08:00:00.000Z' };
+  const w3 = { id: 'w3', closed_at: '2026-11-02T08:00:00.000Z' };
+  const weeks = [w3, w1, w2];
+  const done = (project_id, hours, week_id, over = {}) => task({ project_id, estimated_hours: hours, is_completed: true, week_id, archived_at: '2026-10-01T00:00:00Z', ...over });
+  const history = [
+    done('p1', 2, 'w1'), done('p1', 1, 'w2', { actual_hours: 3 }), done('p2', 4, 'w2'), done('p3', 1, 'w3'),
+  ];
+
+  test('périodes : 4 semaines, 3 mois, 12 mois, tout', () => {
+    const now = new Date(2026, 10, 9);
+    const iso = (d) => d && `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    assert.equal(iso(L.periodStart('4w', now)), '2026-10-12');
+    assert.equal(iso(L.periodStart('3m', now)), '2026-8-9');
+    assert.equal(iso(L.periodStart('12m', now)), '2025-11-9');
+    assert.equal(L.periodStart('all', now), null);
+  });
+
+  test('total et projets : temps passé (à défaut prévu), fusionné sur les semaines, du plus long au plus court', () => {
+    const t = L.timeBreakdown(history, weeks, projects);
+    assert.equal(t.total, 10);
+    assert.deepEqual(t.projects.map((p) => [p.project, p.client, p.hours, p.count]), [['Site', 'Acme', 5, 2], ['Appli', 'Béta', 4, 1], ['Blog', 'Écho', 1, 1]]);
+  });
+
+  test('une période ne garde que les semaines closes depuis son début', () => {
+    const t = L.timeBreakdown(history, weeks, projects, new Date('2026-10-10T00:00:00Z'));
+    assert.equal(t.total, 8);
+    assert.deepEqual(t.weeks.map((w) => w.id), ['w2', 'w3']);
+    assert.deepEqual(t.projects.map((p) => p.project), ['Appli', 'Site', 'Blog']);
+  });
+
+  test('clients : part du total, couleur par rang, les derniers regroupés en « Autres »', () => {
+    const t = L.timeBreakdown(history, weeks, projects, null, 2);
+    assert.deepEqual(t.clients.map((c) => [c.client, c.hours, c.slot]), [['Acme', 5, 0], ['Béta', 4, 1], ['Autres', 1, -1]]);
+    assert.equal(Math.round(t.clients.reduce((s, c) => s + c.share, 0) * 1000) / 1000, 1);
+    assert.equal(t.projects.find((p) => p.project === 'Blog').slot, -1);
+    assert.equal(t.projects.find((p) => p.project === 'Site').slot, 0);
+  });
+
+  test('évolution : une barre par semaine close, de la plus ancienne à la plus récente, empilée par client', () => {
+    const t = L.timeBreakdown(history, weeks, projects, null, 2);
+    assert.deepEqual(t.weeks.map((w) => [w.id, w.hours]), [['w1', 2], ['w2', 7], ['w3', 1]]);
+    assert.deepEqual(t.weeks[1].segments.map((s) => [s.client, s.hours]), [['Acme', 3], ['Béta', 4]]);
+    assert.deepEqual(t.weeks[2].segments.map((s) => [s.client, s.hours]), [['Autres', 1]]);
+  });
+
+  test('tâches consignées d’une semaine non close : barre « en cours » en dernier', () => {
+    const pending = done('p3', 2, null, { consigned_at: '2026-11-06T10:00:00Z', archived_at: '2026-11-06T10:00:00Z' });
+    const t = L.timeBreakdown(history.concat(pending), weeks, projects);
+    const last = t.weeks[t.weeks.length - 1];
+    assert.deepEqual([last.pending, last.hours, last.date], [true, 2, '2026-11-06T10:00:00Z']);
+    assert.equal(t.total, 12);
+  });
+
+  test('heures nulles ignorées ; rien sans historique', () => {
+    const t = L.timeBreakdown([done('p1', 0, 'w1', { actual_hours: 0 })], weeks, projects);
+    assert.deepEqual([t.total, t.projects, t.clients, t.weeks], [0, [], [], []]);
+  });
+});

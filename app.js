@@ -8,7 +8,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const { DAYS, same, suggestProjects: suggestFrom, projectSuggestions, duplicateRow, typeSuggestions, typeNameError, moveItem,
   LABEL_COLORS, taskLabels, primaryLabel, isMeeting, sortDay, groupDay, labelNameError, parseTime,
   clientKey, doneLast, placeAt, rankPatches, dropIndex, mergeOrder, sortFolders, folderPatches,
-  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, lastWeekProjects, monthlyRank, dueOccurrences, recurrenceLabel,
+  comingMonday, planningMonday, dayDate, weekKey, shiftWeek, weekOffset, continueList, noteSuggestions, lineActions, claudePrompt, parseClaudeReply, reviewSuggestions, planningPreview, lastWeekProjects, periodStart, timeBreakdown, monthlyRank, dueOccurrences, recurrenceLabel,
   extractMeetingLink, eventSlot, suggestProject, importPlan, parkedTasks, waitingProjects, projectTime, hoursSpent, parseOptionalHours, budgetStatus, canConsign, consignPatch, consignedTasks, consignedPending, canUnconsign, unconsignPatch, canDeleteProject, projectDeletion, deletionParts, withoutProject, withoutTask, newWeek, carryOver, weekRankPatches, normalizeTask, routeOf, routeParam, buildLabel,
   normalizeUrl, parseYear, clientNameError, deleteClientBlocker, clientProjects,
   searchEntities, filterProjects, groupByClient,
@@ -29,6 +29,14 @@ const PROJECT_SELECT = '*,clients(id,name)';
 
 // Journal des mises à jour (skill mdui-onboarding-overlays) — une entrée par lot livré.
 const CHANGELOG = [
+  {
+    version: '1.37.0', type: 'mineure', lot: 'Lot 37', date: '2026-11-09',
+    items: [
+      'Historique : un interrupteur « Par semaine | Par projet » ouvre une vue globale du temps passé, sur 4 semaines, 3 mois (par défaut), 12 mois ou tout l’historique.',
+      'Trois graphiques : classement des projets par temps passé, répartition par client (anneau) et évolution semaine après semaine (barres empilées par client). Les six clients les plus travaillés gardent leur couleur partout, les autres sont regroupés en gris.',
+      'Survole une barre ou une part pour lire le détail ; « Voir en tableau » donne les mêmes chiffres sous forme de tableaux. Le temps compte les tâches archivées (temps passé, à défaut heures prévues).',
+    ],
+  },
   {
     version: '1.36.0', type: 'mineure', lot: 'Lot 36', date: '2026-11-09',
     items: [
@@ -2454,7 +2462,195 @@ function renderHistory() {
   $('#weeks-list').innerHTML = list.length
     ? list.map(weekHTML).join('')
     : '<p class="text-sm text-slate-400">Aucune semaine enregistrée : « Nouvelle Semaine » en crée une dès qu’une tâche terminée est archivée.</p>';
+  syncHistoryMode();
 }
+
+// ---- Temps passé par projet (Lot 37) : classement des projets, répartition par client, évolution par semaine ----
+// Couleurs : les six premiers clients (du plus long au plus court) gardent leur teinte dans les trois graphiques,
+// les autres sont regroupés en gris. Le texte reste en encre neutre ; chaque teinte est doublée d'un libellé et d'un tableau.
+const VIZ_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
+const VIZ_OTHER = '#94a3b8';
+const vizColor = (slot) => (slot >= 0 ? VIZ_COLORS[slot] : VIZ_OTHER);
+const TIME_PERIODS = [['4w', '4 semaines'], ['3m', '3 mois'], ['12m', '12 mois'], ['all', 'Tout']];
+const HISTORY_MODE_KEY = 'planning_history_mode';
+const TIME_PERIOD_KEY = 'planning_time_period';
+const TIME_TABLE_KEY = 'planning_time_table';
+let historyMode = 'weeks';
+let timePeriod = '3m';
+let timeTable = false;
+try {
+  if (localStorage.getItem(HISTORY_MODE_KEY) === 'projects') historyMode = 'projects';
+  const p = localStorage.getItem(TIME_PERIOD_KEY);
+  if (TIME_PERIODS.some(([id]) => id === p)) timePeriod = p;
+  timeTable = localStorage.getItem(TIME_TABLE_KEY) === 'on';
+} catch { /* stockage indisponible */ }
+const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { /* stockage indisponible */ } };
+const pct = (share) => `${Math.round(share * 100)} %`;
+const weekLabel = (w) => (w.pending ? 'Non close' : fmtDate(w.date, SHORT_DATE));
+
+function syncHistoryMode() {
+  const byProject = historyMode === 'projects';
+  $('#weeks-list').classList.toggle('hidden', byProject);
+  $('#time-view').classList.toggle('hidden', !byProject);
+  document.querySelectorAll('[data-history-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.historyMode === historyMode)));
+  if (byProject) renderTime();
+}
+
+const legendHTML = (clients) => `
+  <ul class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">${clients.map((c) => `
+    <li class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm" style="background:${vizColor(c.slot)}"></span>${esc(c.client)}</li>`).join('')}
+  </ul>`;
+
+function projectBarsHTML(t) {
+  const shown = t.projects.slice(0, 10);
+  const rest = t.projects.slice(10);
+  const max = shown[0]?.hours || 1;
+  return `
+    <ul class="space-y-2.5">${shown.map((p) => `
+      <li class="grid grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-3 text-sm" tabindex="0" data-tip="${esc(`${p.client} · ${p.project} : ${fmtH(p.hours)} sur ${plural(p.count, 'tâche')}`)}"
+          aria-label="${esc(`${p.client} · ${p.project} : ${fmtH(p.hours)}`)}">
+        <span class="min-w-0"><span class="block truncate">${esc(p.project)}</span><span class="block truncate text-xs text-slate-500">${esc(p.client)}</span></span>
+        <span class="h-2 rounded-full bg-slate-100"><span class="block h-full rounded-r-[4px] rounded-l-full" style="width:${Math.max(2, Math.round((p.hours / max) * 100))}%;background:${vizColor(p.slot)}"></span></span>
+        <span class="text-xs tabular-nums text-slate-600">${fmtH(p.hours)}</span>
+      </li>`).join('')}
+    </ul>
+    ${rest.length ? `<p class="mt-3 text-xs text-slate-500">+ ${plural(rest.length, 'autre')} projet${rest.length > 1 ? 's' : ''} · ${fmtH(rest.reduce((s, p) => s + p.hours, 0))} (voir le tableau)</p>` : ''}`;
+}
+
+function donutHTML(t) {
+  const r = 44;
+  const c = 2 * Math.PI * r;
+  let offset = 0;
+  const arcs = t.clients.map((cl) => {
+    const len = cl.share * c;
+    const gap = t.clients.length > 1 ? 2 : 0; // 2 px de fond entre deux parts
+    const arc = `<circle cx="60" cy="60" r="${r}" fill="none" stroke="${vizColor(cl.slot)}" stroke-width="16" stroke-dasharray="${Math.max(len - gap, 0.1)} ${c}"
+      stroke-dashoffset="${-offset}" transform="rotate(-90 60 60)" data-tip="${esc(`${cl.client} : ${fmtH(cl.hours)} (${pct(cl.share)})`)}"/>`;
+    offset += len;
+    return arc;
+  }).join('');
+  return `
+    <div class="flex flex-wrap items-center gap-4">
+      <svg viewBox="0 0 120 120" class="h-36 w-36 shrink-0" role="img" aria-label="Répartition du temps par client">
+        ${arcs}
+        <text x="60" y="58" text-anchor="middle" class="fill-slate-900 text-[15px] font-semibold">${esc(fmtH(t.total))}</text>
+        <text x="60" y="73" text-anchor="middle" class="fill-slate-500 text-[8px]">au total</text>
+      </svg>
+      <ul class="min-w-0 flex-1 space-y-1.5 text-sm">${t.clients.map((cl) => `
+        <li class="flex items-center gap-2"><span class="h-2.5 w-2.5 shrink-0 rounded-sm" style="background:${vizColor(cl.slot)}"></span>
+          <span class="min-w-0 flex-1 truncate">${esc(cl.client)}</span>
+          <span class="text-xs tabular-nums text-slate-600">${fmtH(cl.hours)} · ${pct(cl.share)}</span></li>`).join('')}
+      </ul>
+    </div>`;
+}
+
+function weeksChartHTML(t) {
+  const max = Math.max(...t.weeks.map((w) => w.hours), 1);
+  const every = t.weeks.length > 14 ? 2 : 1; // étiquettes de dates une fois sur deux quand les barres se serrent
+  return `
+    <div class="relative pl-10">
+      <span class="absolute left-0 top-0 text-[11px] tabular-nums text-slate-500">${esc(fmtH(max))}</span>
+      <span class="absolute bottom-6 left-0 text-[11px] tabular-nums text-slate-500">0</span>
+      <div class="flex h-48 items-end gap-1.5 border-b border-slate-200">${t.weeks.map((w) => `
+        <div class="flex h-full min-w-0 flex-1 flex-col justify-end" tabindex="0" data-tip="${esc(`${w.pending ? 'Tâches consignées, semaine non close' : `Semaine close le ${fmtDate(w.date, SHORT_DATE)}`} : ${fmtH(w.hours)}${w.segments.length > 1 ? ' — ' + w.segments.map((s) => `${s.client} ${fmtH(s.hours)}`).join(', ') : ''}`)}"
+            aria-label="${esc(`${weekLabel(w)} : ${fmtH(w.hours)}`)}">
+          <div class="mx-auto flex w-full max-w-10 flex-col-reverse gap-[2px]" style="height:${Math.max(2, (w.hours / max) * 100)}%">${w.segments.map((s, i) => `
+            <span class="block min-h-[2px] w-full ${i === w.segments.length - 1 ? 'rounded-t-[4px]' : ''}" style="height:${(s.hours / w.hours) * 100}%;background:${vizColor(s.slot)}"></span>`).join('')}</div>
+        </div>`).join('')}
+      </div>
+      <div class="mt-1 flex gap-1.5">${t.weeks.map((w, i) => `
+        <span class="min-w-0 flex-1 truncate text-center text-[11px] text-slate-500">${i % every === 0 ? esc(weekLabel(w)) : ''}</span>`).join('')}
+      </div>
+    </div>`;
+}
+
+function timeTableHTML(t) {
+  const th = 'px-2 py-1.5 text-left text-xs font-semibold text-slate-500';
+  const td = 'px-2 py-1.5 text-sm';
+  return `
+    <div class="grid gap-4 lg:grid-cols-2">
+      <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm overflow-x-auto" aria-label="Temps par projet">
+        <table class="w-full"><thead><tr><th class="${th}">Projet</th><th class="${th}">Client</th><th class="${th} text-right">Tâches</th><th class="${th} text-right">Heures</th><th class="${th} text-right">Part</th></tr></thead>
+          <tbody class="divide-y divide-slate-100">${t.projects.map((p) => `
+            <tr><td class="${td}">${esc(p.project)}</td><td class="${td} text-slate-600">${esc(p.client)}</td><td class="${td} text-right tabular-nums">${p.count}</td>
+              <td class="${td} text-right tabular-nums">${fmtH(p.hours)}</td><td class="${td} text-right tabular-nums text-slate-600">${pct(p.hours / t.total)}</td></tr>`).join('')}
+          </tbody></table>
+      </section>
+      <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm overflow-x-auto" aria-label="Temps par semaine">
+        <table class="w-full"><thead><tr><th class="${th}">Semaine close le</th><th class="${th}">Détail par client</th><th class="${th} text-right">Heures</th></tr></thead>
+          <tbody class="divide-y divide-slate-100">${[...t.weeks].reverse().map((w) => `
+            <tr><td class="${td}">${w.pending ? 'Non close (consignées)' : esc(fmtDate(w.date, SHORT_DATE))}</td>
+              <td class="${td} text-slate-600">${w.segments.map((s) => `${esc(s.client)} ${fmtH(s.hours)}`).join(' · ')}</td>
+              <td class="${td} text-right tabular-nums">${fmtH(w.hours)}</td></tr>`).join('')}
+          </tbody></table>
+      </section>
+    </div>`;
+}
+
+function renderTime() {
+  const box = $('#time-view');
+  if (box.classList.contains('hidden')) return;
+  vizTip.classList.add('hidden'); // l'élément survolé disparaît avec le rendu
+  const t = timeBreakdown(history, weeks, projects, periodStart(timePeriod), VIZ_COLORS.length);
+  const clientCount = t.clients.filter((c) => c.slot >= 0).length + (t.clients.some((c) => c.slot < 0) ? 1 : 0);
+  const card = 'rounded-xl border border-slate-200 bg-white p-4 shadow-sm';
+  const h3 = 'mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500';
+  box.innerHTML = `
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div role="group" aria-label="Période" class="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-sm font-medium">${TIME_PERIODS.map(([id, label]) => `
+        <button type="button" data-time-period="${id}" aria-pressed="${id === timePeriod}"
+          class="px-3 py-1 rounded-md text-slate-600 hover:text-slate-900 aria-[pressed=true]:bg-slate-900 aria-[pressed=true]:text-white transition">${label}</button>`).join('')}
+      </div>
+      <button type="button" data-time-table aria-pressed="${timeTable}"
+        class="whitespace-nowrap text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 aria-[pressed=true]:bg-slate-900 aria-[pressed=true]:text-white aria-[pressed=true]:border-slate-900 transition">Voir en tableau</button>
+    </div>
+    ${t.total <= 0 ? '<p class="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">Aucun temps passé enregistré sur cette période : il apparaît quand « Nouvelle Semaine » archive des tâches terminées.</p>' : `
+    <p class="mb-4 text-sm text-slate-600 tabular-nums"><span class="font-semibold text-slate-900">${fmtH(t.total)}</span> passées · ${plural(t.projects.length, 'projet')} · ${plural(clientCount, 'client')} · ${plural(t.weeks.length, 'semaine')}</p>
+    ${timeTable ? timeTableHTML(t) : `
+    <div class="grid gap-4 lg:grid-cols-5">
+      <section class="${card} lg:col-span-3"><h3 class="${h3}">Temps par projet</h3>${projectBarsHTML(t)}</section>
+      <section class="${card} lg:col-span-2"><h3 class="${h3}">Répartition par client</h3>${donutHTML(t)}</section>
+      <section class="${card} lg:col-span-5"><div class="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Évolution par semaine</h3>${legendHTML(t.clients)}</div>${weeksChartHTML(t)}</section>
+    </div>`}`}`;
+}
+
+$('#history-mode').addEventListener('click', (e) => {
+  const mode = e.target.closest('[data-history-mode]')?.dataset.historyMode;
+  if (!mode) return;
+  historyMode = mode;
+  remember(HISTORY_MODE_KEY, mode);
+  syncHistoryMode();
+});
+$('#time-view').addEventListener('click', (e) => {
+  const period = e.target.closest('[data-time-period]')?.dataset.timePeriod;
+  if (period) { timePeriod = period; remember(TIME_PERIOD_KEY, period); renderTime(); return; }
+  if (e.target.closest('[data-time-table]')) { timeTable = !timeTable; remember(TIME_TABLE_KEY, timeTable ? 'on' : 'off'); renderTime(); }
+});
+
+// Infobulle des graphiques : au survol et au clavier (focus) d'un élément portant data-tip.
+const vizTip = document.createElement('div');
+vizTip.className = 'pointer-events-none fixed z-50 hidden max-w-xs rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white shadow-lg';
+vizTip.setAttribute('role', 'tooltip');
+document.body.append(vizTip);
+const showTip = (el, x, y) => {
+  vizTip.textContent = el.dataset.tip;
+  vizTip.classList.remove('hidden');
+  const w = vizTip.offsetWidth;
+  vizTip.style.left = `${Math.min(Math.max(8, x + 12), window.innerWidth - w - 8)}px`;
+  vizTip.style.top = `${y + 16 + vizTip.offsetHeight > window.innerHeight ? y - vizTip.offsetHeight - 10 : y + 16}px`;
+};
+$('#time-view').addEventListener('mousemove', (e) => {
+  const el = e.target.closest('[data-tip]');
+  if (el) showTip(el, e.clientX, e.clientY); else vizTip.classList.add('hidden');
+});
+$('#time-view').addEventListener('mouseleave', () => vizTip.classList.add('hidden'));
+$('#time-view').addEventListener('focusin', (e) => {
+  const el = e.target.closest('[data-tip]');
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  showTip(el, r.left, r.bottom - 16);
+});
+$('#time-view').addEventListener('focusout', () => vizTip.classList.add('hidden'));
 
 function weekHTML(w) {
   const done = weekTasks(history, w);
@@ -4017,7 +4213,7 @@ const TOURS = {
         content: 'Tape un client ou un projet pour filtrer le sas et ouvrir sa fiche d’un clic (Entrée ouvre le premier résultat). Le bouton Clients regroupe le sas par client.' },
       { id: 'history', targetSelector: '#tab-history', placement: 'bottom', lot: 'Lot 21',
         title: 'L’historique des semaines',
-        content: 'Chaque « Nouvelle Semaine » enregistre ici la semaine close : tâches terminées et reportées, temps par client, et commentaires restés non traités. Le bouton ⧉ d’une tâche la duplique dans le sas d’attente de la semaine active.' },
+        content: 'Chaque « Nouvelle Semaine » enregistre ici la semaine close : tâches terminées et reportées, temps par client, et commentaires restés non traités. Le bouton ⧉ d’une tâche la duplique dans le sas d’attente de la semaine active. L’interrupteur « Par projet » affiche le temps passé par projet, par client et par semaine, avec des graphiques.' },
       { id: 'clients', targetSelector: '#tab-clients', placement: 'bottom', lot: 'Lot 8',
         title: 'Les clients',
         content: 'Chaque client a sa fiche : logo, site web et projets rattachés. Dans le détail d’un projet, ajoute l’année, le devis et des liens d’accès rapide.' },
